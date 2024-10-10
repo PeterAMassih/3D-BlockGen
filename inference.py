@@ -1,29 +1,32 @@
 import torch
-from diffusion import CustomUNetDiffusionPipeline
-from UNet3D import UNet3DWithAttention
+import matplotlib.pyplot as plt
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+class DiffusionInference3D:
+    def __init__(self, model, noise_scheduler, device='cuda'):
+        self.model = model
+        self.noise_scheduler = noise_scheduler
+        self.device = device
 
-# Load the best model
-unet3d = UNet3DWithAttention().to(device)
-pipeline = CustomUNetDiffusionPipeline(unet=unet3d).to(device)
-pipeline.load_state_dict(torch.load('best_model.pth'))
+    def sample(self, num_samples=8, image_size=(32, 32, 32)):
+        # Initialize random noise as the starting point
+        sample = torch.randn(num_samples, 1, *image_size).to(self.device)
 
-# Sampling loop
-num_samples = 4
-shape = (num_samples, 1, 32, 32, 32)  # Example: 3D shape
+        # Reverse denoising process, step by step
+        for t in self.noise_scheduler.timesteps:
+            with torch.no_grad():
+                residual = self.model(sample, t).sample
+            # Update the sample using the scheduler
+            sample = self.noise_scheduler.step(residual, t, sample).prev_sample
 
-# Start with random noise
-samples = torch.randn(shape).to(device)
+        return sample
 
-for t in reversed(range(1000)):
-    with torch.no_grad():
-        predicted_noise = pipeline(samples, torch.tensor([t]).to(device))
-    # Update samples with noise removal based on predicted noise
-    samples = pipeline.scheduler.step(predicted_noise, t, samples).prev_sample
-    print("Sampling step:", t)
+    def visualize_samples(self, samples):
+        # Convert the tensor to numpy for visualization
+        samples = samples.cpu().numpy()
 
-# Save the generated samples
-torch.save(samples, 'generated_samples.pt')
+        fig, axs = plt.subplots(1, len(samples), figsize=(12, 4))
+        for i, sample in enumerate(samples):
+            axs[i].imshow(sample[0, :, :, 16], cmap="gray")  # Visualize the center slice along Z-axis
+            axs[i].axis("off")
+        plt.show()
 
-print("Generated samples:", samples.shape)

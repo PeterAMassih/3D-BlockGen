@@ -1,81 +1,87 @@
 import torch
-import torch.optim as optim
-import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
-from UNet3D import UNet3DWithAttention
-from diffusion import CustomUNetDiffusionPipeline
-from data_loader import create_dataloader
-from torch.utils.data import random_split
 
-def train_model(data_path, num_epochs=50, batch_size=8, learning_rate=1e-4, model_save_path='best_model.pth', test_split_ratio=0.2):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+use_cuda = torch.cuda.is_available()
 
-    # Load dataset
-    dataset = create_dataloader(data_path, batch_size=batch_size, return_dataset=True)  # Modified to return dataset
-    train_size = int((1 - test_split_ratio) * len(dataset))
-    test_size = len(dataset) - train_size
-    train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
-
-    # Create DataLoader for both train and test sets
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    # Instantiate the model and optimizer
-    unet3d = UNet3DWithAttention().to(device)
-    pipeline = CustomUNetDiffusionPipeline(unet3d).to(device)
-    # TODO scheduler on learning rate 
-    optimizer = optim.Adam(pipeline.parameters(), lr=learning_rate)
-
-    scheduler = pipeline.scheduler
-
-    best_loss = float('inf')
-
-    # Training Loop
-    for epoch in range(num_epochs):
-        epoch_loss = 0.0
-        pipeline.train()
-        
-        # Training phase
-        for i, batch in enumerate(tqdm(train_loader)):
-            optimizer.zero_grad()
-
-            # Prepare data
-            batch = batch.to(device)
-            timesteps = torch.randint(0, 1000, (batch.size(0),), device=device).long()
-            noise = torch.randn_like(batch)
-            noisy_batch = scheduler.add_noise(batch, noise, timesteps)
-
-            # Forward pass
-            predicted_noise = pipeline(noisy_batch, timesteps)
-            loss = nn.MSELoss()(predicted_noise, noise)
-            loss.backward()
-
+if use_cuda:
+    from torch.cuda.amp import autocast, GradScaler
+else:
+    class autocast:
+        def __init__(self, enabled=True):
+            self.enabled = enabled
+        def __enter__(self):
+            pass
+        def __exit__(self, *args):
+            pass
+    
+    class GradScaler:
+        def scale(self, loss):
+            return loss
+        def step(self, optimizer):
             optimizer.step()
-            epoch_loss += loss.item()
+        def update(self):
+            pass
 
-        avg_loss = epoch_loss / len(train_loader)
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {avg_loss:.4f}')
+def train_diffusion_model(diffusion_model, train_dataloader, test_dataloader, epochs=30, device='cpu', model_save_path='best_model.pth'):
+    optimizer = torch.optim.AdamW(diffusion_model.parameters(), lr=4e-4)
+    scaler = GradScaler()
+    best_test_loss = float('inf')
+    losses = []
+    test_losses = []
+    
+    for epoch in range(epochs):
+        diffusion_model.train()
+        running_loss = 0.0
+        for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs} - Training"):
+            clean_images = batch.to(device)
+            
+            noise = torch.randn_like(clean_images)
+            bs = clean_images.shape[0]
+            timesteps = torch.randint(0, diffusion_model.noise_scheduler.config.num_train_timesteps, (bs,), device=device).long()
 
-        # Testing phase
-        test_loss = 0.0
-        pipeline.eval()
-        with torch.no_grad():
-            for i, test_batch in enumerate(test_loader):
-                test_batch = test_batch.to(device)
-                timesteps = torch.randint(0, 1000, (test_batch.size(0),), device=device).long()
-                noise = torch.randn_like(test_batch)
-                noisy_test_batch = scheduler.add_noise(test_batch, noise, timesteps)
+            with autocast(enabled=use_cuda):
+                noisy_images = diffusion_model.add_noise(clean_images, noise, timesteps)
+                noise_pred = diffusion_model.get_noise_prediction(noisy_images, timesteps)
+                loss = F.mse_loss(noise_pred, noise)
 
-                predicted_test_noise = pipeline(noisy_test_batch, timesteps)
-                test_loss += nn.MSELoss()(predicted_test_noise, noise).item()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
 
-        avg_test_loss = test_loss / len(test_loader)
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Test Loss: {avg_test_loss:.4f}')
+            running_loss += loss.item()
 
-        # Save model if test loss is the best so far
-        if avg_test_loss < best_loss:
-            best_loss = avg_test_loss
-            torch.save(pipeline.state_dict(), model_save_path)
+        avg_loss = running_loss / len(train_dataloader)
+        losses.append(avg_loss)
+        print(f"Epoch [{epoch+1}/{epochs}], Training Loss: {avg_loss}")
 
-    print(f"Training complete. Best test loss: {best_loss:.4f}")
-    return best_loss
+        test_loss = evaluate_diffusion_model(diffusion_model, test_dataloader, device)
+        test_losses.append(test_loss)
+
+        if test_loss < best_test_loss:
+            best_test_loss = test_loss
+            torch.save(diffusion_model.state_dict(), model_save_path)
+            print(f"Saved best model at epoch {epoch+1} with Test Loss: {test_loss:.4f}")
+
+    return losses, test_losses
+
+def evaluate_diffusion_model(diffusion_model, test_dataloader, device='cpu'):
+    diffusion_model.eval()
+    test_loss = 0.0
+    
+    with torch.no_grad(), autocast(enabled=use_cuda):
+        for batch in tqdm(test_dataloader, desc="Evaluating"):
+            clean_images = batch.to(device)
+            noise = torch.randn_like(clean_images)
+            bs = clean_images.shape[0]
+            timesteps = torch.randint(0, diffusion_model.noise_scheduler.config.num_train_timesteps, (bs,), device=device).long()
+
+            noisy_images = diffusion_model.add_noise(clean_images, noise, timesteps)
+            noise_pred = diffusion_model.get_noise_prediction(noisy_images, timesteps)
+            loss = F.mse_loss(noise_pred, noise)
+            test_loss += loss.item()
+
+    avg_test_loss = test_loss / len(test_dataloader)
+    print(f"Test Loss: {avg_test_loss:.4f}")
+    return avg_test_loss
