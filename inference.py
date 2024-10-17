@@ -1,5 +1,6 @@
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
 
 class DiffusionInference3D:
     def __init__(self, model, noise_scheduler, device='cuda'):
@@ -20,13 +21,58 @@ class DiffusionInference3D:
 
         return sample
 
-    def visualize_samples(self, samples):
+    def visualize_samples(self, samples, threshold=0.5):
         # Convert the tensor to numpy for visualization
         samples = samples.cpu().numpy()
 
-        fig, axs = plt.subplots(1, len(samples), figsize=(12, 4))
+        fig, axs = plt.subplots(2, len(samples), figsize=(4*len(samples), 8))
         for i, sample in enumerate(samples):
-            axs[i].imshow(sample[0, :, :, 16], cmap="gray")  # Visualize the center slice along Z-axis
-            axs[i].axis("off")
+            # Visualize center slice
+            axs[0, i].imshow(sample[0, :, :, sample.shape[3]//2], cmap="gray")
+            axs[0, i].set_title("Center Slice")
+            axs[0, i].axis("off")
+
+            # Visualize 3D plot
+            binary_sample = (sample > threshold).astype(np.float32)
+            ax = axs[1, i]
+            ax.remove()
+            ax = fig.add_subplot(2, len(samples), len(samples) + i + 1, projection='3d')
+            ax.voxels(binary_sample[0], edgecolor='k')
+            ax.set_title("3D Visualization")
+
+        plt.tight_layout()
         plt.show()
 
+def visualize_tensor(tensor: torch.Tensor, threshold=0.5) -> None:
+    """
+    Visualize a PyTorch tensor representing a voxel grid.
+
+    Args:
+        tensor (torch.Tensor): 4D PyTorch tensor with shape (1, 1, resolution, resolution, resolution).
+        threshold (float): Threshold value for binarizing the tensor.
+    """
+    # Check if the tensor has the expected shape
+    if tensor.dim() != 5 or tensor.shape[0] != 1 or tensor.shape[1] != 1:
+        raise ValueError("Expected tensor shape: (1, 1, resolution, resolution, resolution)")
+
+    # Convert tensor to numpy array and remove singleton dimensions
+    voxel_grid = tensor.squeeze().cpu().numpy()
+
+    # Binarize the voxel grid
+    binary_grid = (voxel_grid > threshold).astype(np.float32)
+
+    fig = plt.figure(figsize=(12, 4))
+    
+    # Plot center slice
+    ax1 = fig.add_subplot(121)
+    ax1.imshow(voxel_grid[:, :, voxel_grid.shape[2]//2], cmap="gray")
+    ax1.set_title("Center Slice")
+    ax1.axis("off")
+
+    # Plot 3D visualization
+    ax2 = fig.add_subplot(122, projection='3d')
+    ax2.voxels(binary_grid, edgecolor='k')
+    ax2.set_title("3D Visualization")
+
+    plt.tight_layout()
+    plt.show()

@@ -2,30 +2,8 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-use_cuda = torch.cuda.is_available()
-
-if use_cuda:
-    from torch.cuda.amp import autocast, GradScaler
-else:
-    class autocast:
-        def __init__(self, enabled=True):
-            self.enabled = enabled
-        def __enter__(self):
-            pass
-        def __exit__(self, *args):
-            pass
-    
-    class GradScaler:
-        def scale(self, loss):
-            return loss
-        def step(self, optimizer):
-            optimizer.step()
-        def update(self):
-            pass
-
 def train_diffusion_model(diffusion_model, train_dataloader, test_dataloader, epochs=30, device='cpu', model_save_path='best_model.pth'):
     optimizer = torch.optim.AdamW(diffusion_model.parameters(), lr=4e-4)
-    scaler = GradScaler()
     best_test_loss = float('inf')
     losses = []
     test_losses = []
@@ -40,14 +18,14 @@ def train_diffusion_model(diffusion_model, train_dataloader, test_dataloader, ep
             bs = clean_images.shape[0]
             timesteps = torch.randint(0, diffusion_model.noise_scheduler.config.num_train_timesteps, (bs,), device=device).long()
 
-            with autocast(enabled=use_cuda):
-                noisy_images = diffusion_model.add_noise(clean_images, noise, timesteps)
-                noise_pred = diffusion_model.get_noise_prediction(noisy_images, timesteps)
-                loss = F.mse_loss(noise_pred, noise)
+            # Add noise and get model prediction
+            noisy_images = diffusion_model.add_noise(clean_images, noise, timesteps)
+            noise_pred = diffusion_model.get_noise_prediction(noisy_images, timesteps)
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # Calculate loss and perform backprop
+            loss = F.mse_loss(noise_pred, noise)
+            loss.backward()
+            optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
             running_loss += loss.item()
@@ -70,7 +48,7 @@ def evaluate_diffusion_model(diffusion_model, test_dataloader, device='cpu'):
     diffusion_model.eval()
     test_loss = 0.0
     
-    with torch.no_grad(), autocast(enabled=use_cuda):
+    with torch.no_grad():
         for batch in tqdm(test_dataloader, desc="Evaluating"):
             clean_images = batch.to(device)
             noise = torch.randn_like(clean_images)
@@ -79,6 +57,8 @@ def evaluate_diffusion_model(diffusion_model, test_dataloader, device='cpu'):
 
             noisy_images = diffusion_model.add_noise(clean_images, noise, timesteps)
             noise_pred = diffusion_model.get_noise_prediction(noisy_images, timesteps)
+
+            # Calculate loss
             loss = F.mse_loss(noise_pred, noise)
             test_loss += loss.item()
 
