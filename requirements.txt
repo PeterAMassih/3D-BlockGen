@@ -1,0 +1,13 @@
+torch
+torchvision
+matplotlib
+numpy
+tqdm
+diffusers
+transformers
+accelerate
+scipy
+scikit-learn
+pandas
+trimesh
+objaverse
