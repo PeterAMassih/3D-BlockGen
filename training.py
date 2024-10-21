@@ -42,6 +42,8 @@ def train_diffusion_model(diffusion_model, train_dataloader, test_dataloader, ep
             torch.save(diffusion_model.state_dict(), model_save_path)
             print(f"Saved best model at epoch {epoch+1} with Test Loss: {test_loss:.4f}")
 
+        torch.save(diffusion_model.state_dict(), "latest_model.pth")
+
     return losses, test_losses
 
 def evaluate_diffusion_model(diffusion_model, test_dataloader, device='cpu'):
