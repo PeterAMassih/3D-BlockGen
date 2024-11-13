@@ -142,11 +142,11 @@ class VoxelizerWithAugmentation:
         min_coords = mesh.vertices.min(axis=0)
         max_coords = mesh.vertices.max(axis=0)
         
-        # Print debug info
-        print(f"Mesh bounds after normalization:")
-        print(f"Min: {min_coords}")
-        print(f"Max: {max_coords}")
-        print(f"Extents: {max_coords - min_coords}")
+        # # Print debug info
+        # print(f"Mesh bounds after normalization:")
+        # print(f"Min: {min_coords}")
+        # print(f"Max: {max_coords}")
+        # print(f"Extents: {max_coords - min_coords}")
         
         # Final safety check - just force it to fit if still out of bounds
         if np.any(min_coords < margin) or np.any(max_coords > (self.resolution - margin)):
@@ -166,9 +166,9 @@ class VoxelizerWithAugmentation:
             # Final verification
             min_coords = mesh.vertices.min(axis=0)
             max_coords = mesh.vertices.max(axis=0)
-            print(f"After final adjustment:")
-            print(f"Min: {min_coords}")
-            print(f"Max: {max_coords}")
+            # print(f"After final adjustment:")
+            # print(f"Min: {min_coords}")
+            # print(f"Max: {max_coords}")
         
         # Ensure all vertices are within bounds
         mesh.vertices = np.clip(mesh.vertices, margin, self.resolution - margin)
@@ -308,4 +308,4 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, visua
 if __name__ == "__main__":
     input_dir = "/Users/PeterAM/Desktop/Research_Project/3D-BlockGen/objaverse_data/hf-objaverse-v1"
     output_dir = "./ayre"
-    process_dataset(input_dir, output_dir, resolution=32, visualize_all=True)
+    process_dataset(input_dir, output_dir, resolution=32, visualize_all=False)
