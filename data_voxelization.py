@@ -293,7 +293,7 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, visua
     for glb_file in tqdm(glb_files):
         results = voxelizer.process_mesh(str(glb_file))
         if results:
-            all_results.append(results[0])
+            all_results.append(results[0]) # just add the original not augmented just to see the objects
             file_names.append(glb_file.stem)
             
             relative_path = glb_file.relative_to(input_dir)

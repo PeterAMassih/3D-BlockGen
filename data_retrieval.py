@@ -8,21 +8,17 @@ import os
 import urllib.request
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
-
 from tqdm import tqdm
+import time
 
-# Changed the objaverse save path
+# Save to current directory
 BASE_PATH = os.path.join(os.getcwd(), "objaverse_data")
 _VERSIONED_PATH = os.path.join(BASE_PATH, "hf-objaverse-v1")
-
+DOWNLOADED_FILES = os.path.join(BASE_PATH, "downloaded_files.json")
+FAILED_FILES = os.path.join(BASE_PATH, "failed_files.json")
 
 def load_annotations(uids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Load the full metadata of all objects in the dataset.
-
-    Args:
-        uids: A list of uids with which to load metadata. If None, it loads
-        the metadata for all uids.
-    """
+    """Load the full metadata of all objects in the dataset."""
     metadata_path = os.path.join(_VERSIONED_PATH, "metadata")
     object_paths = _load_object_paths()
     dir_ids = (
@@ -30,192 +26,167 @@ def load_annotations(uids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         if uids is not None
         else [f"{i // 1000:03d}-{i % 1000:03d}" for i in range(160)]
     )
-    if len(dir_ids) > 10:
-        dir_ids = tqdm(dir_ids)
+    
     out = {}
-    for i_id in dir_ids:
+    for i_id in tqdm(dir_ids, desc="Loading annotations"):
         json_file = f"{i_id}.json.gz"
         local_path = os.path.join(metadata_path, json_file)
         if not os.path.exists(local_path):
             hf_url = f"https://huggingface.co/datasets/allenai/objaverse/resolve/main/metadata/{i_id}.json.gz"
-            # wget the file and put it in local_path
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             urllib.request.urlretrieve(hf_url, local_path)
         with gzip.open(local_path, "rb") as f:
             data = json.load(f)
-        if uids is not None:
-            data = {uid: data[uid] for uid in uids if uid in data}
-        out.update(data)
-        if uids is not None and len(out) == len(uids):
-            break
+            if uids is not None:
+                data = {uid: data[uid] for uid in uids if uid in data}
+            out.update(data)
+            
     return out
 
-
 def _load_object_paths() -> Dict[str, str]:
-    """Load the object paths from the dataset.
-
-    The object paths specify the location of where the object is located
-    in the Hugging Face repo.
-
-    Returns:
-        A dictionary mapping the uid to the object path.
-    """
+    """Load the object paths from the dataset."""
     object_paths_file = "object-paths.json.gz"
     local_path = os.path.join(_VERSIONED_PATH, object_paths_file)
     if not os.path.exists(local_path):
         hf_url = f"https://huggingface.co/datasets/allenai/objaverse/resolve/main/{object_paths_file}"
-        # wget the file and put it in local_path
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         urllib.request.urlretrieve(hf_url, local_path)
     with gzip.open(local_path, "rb") as f:
-        object_paths = json.load(f)
-    return object_paths
+        return json.load(f)
 
+def _download_with_retry(url: str, tmp_path: str, max_retries: int = 3, delay: int = 5) -> bool:
+    """Download with retries."""
+    for attempt in range(max_retries):
+        try:
+            urllib.request.urlretrieve(url, tmp_path)
+            return True
+        except urllib.error.HTTPError as e:
+            if e.code == 504 and attempt < max_retries - 1:  # Gateway Timeout
+                time.sleep(delay)
+                continue
+            return False
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                continue
+            return False
+    return False
 
-def load_uids() -> List[str]:
-    """Load the uids from the dataset.
-
-    Returns:
-        A list of uids.
-    """
-    return list(_load_object_paths().keys())
-
-
-def _download_object(
-    uid: str,
-    object_path: str,
-    total_downloads: float,
-    start_file_count: int,
-) -> Tuple[str, str]:
-    """Download the object for the given uid.
-
-    Args:
-        uid: The uid of the object to load.
-        object_path: The path to the object in the Hugging Face repo.
-
-    Returns:
-        The local path of where the object was downloaded.
-    """
-    # print(f"downloading {uid}")
-    local_path = os.path.join(_VERSIONED_PATH, object_path)
-    tmp_local_path = os.path.join(_VERSIONED_PATH, object_path + ".tmp")
-    hf_url = (
-        f"https://huggingface.co/datasets/allenai/objaverse/resolve/main/{object_path}"
-    )
-    # wget the file and put it in local_path
-    os.makedirs(os.path.dirname(tmp_local_path), exist_ok=True)
-    urllib.request.urlretrieve(hf_url, tmp_local_path)
-
-    os.rename(tmp_local_path, local_path)
-
-    files = glob.glob(os.path.join(_VERSIONED_PATH, "glbs", "*", "*.glb"))
-    print(
-        "Downloaded",
-        len(files) - start_file_count,
-        "/",
-        total_downloads,
-        "objects",
-    )
-
-    return uid, local_path
-
+def _download_object(args: Tuple) -> Tuple[str, Optional[str]]:
+    """Download a single object with retries."""
+    uid, object_path = args
+    
+    try:
+        local_path = os.path.join(_VERSIONED_PATH, object_path)
+        tmp_local_path = os.path.join(_VERSIONED_PATH, object_path + ".tmp")
+        
+        # Skip if already downloaded
+        if os.path.exists(local_path):
+            return uid, local_path
+            
+        hf_url = f"https://huggingface.co/datasets/allenai/objaverse/resolve/main/{object_path}"
+        
+        os.makedirs(os.path.dirname(tmp_local_path), exist_ok=True)
+        
+        # Try download with retries
+        if _download_with_retry(hf_url, tmp_local_path):
+            os.rename(tmp_local_path, local_path)
+            return uid, local_path
+        else:
+            if os.path.exists(tmp_local_path):
+                os.remove(tmp_local_path)
+            return uid, None
+            
+    except Exception as e:
+        print(f"Error downloading {uid}: {str(e)}")
+        if os.path.exists(tmp_local_path):
+            os.remove(tmp_local_path)
+        return uid, None
 
 def load_objects(uids: List[str], download_processes: int = 1) -> Dict[str, str]:
-    """Return the path to the object files for the given uids.
-
-    If the object is not already downloaded, it will be downloaded.
-
-    Args:
-        uids: A list of uids.
-        download_processes: The number of processes to use to download the objects.
-
-    Returns:
-        A dictionary mapping the object uid to the local path of where the object
-        downloaded.
-    """
+    """Download objects and return their paths."""
     object_paths = _load_object_paths()
-    out = {}
-    if download_processes == 1:
-        uids_to_download = []
-        for uid in uids:
-            if uid.endswith(".glb"):
-                uid = uid[:-4]
-            if uid not in object_paths:
-                warnings.warn(f"Could not find object with uid {uid}. Skipping it.")
-                continue
-            object_path = object_paths[uid]
-            local_path = os.path.join(_VERSIONED_PATH, object_path)
-            if os.path.exists(local_path):
-                out[uid] = local_path
-                continue
-            uids_to_download.append((uid, object_path))
-        if len(uids_to_download) == 0:
-            return out
-        start_file_count = len(
-            glob.glob(os.path.join(_VERSIONED_PATH, "glbs", "*", "*.glb"))
-        )
-        for uid, object_path in uids_to_download:
-            uid, local_path = _download_object(
-                uid, object_path, len(uids_to_download), start_file_count
-            )
-            out[uid] = local_path
-    else:
-        args = []
-        for uid in uids:
-            if uid.endswith(".glb"):
-                uid = uid[:-4]
-            if uid not in object_paths:
-                warnings.warn(f"Could not find object with uid {uid}. Skipping it.")
-                continue
-            object_path = object_paths[uid]
-            local_path = os.path.join(_VERSIONED_PATH, object_path)
-            if not os.path.exists(local_path):
-                args.append((uid, object_paths[uid]))
+    downloaded = {}
+    failed = {}
+    
+    # Load previous state
+    if os.path.exists(DOWNLOADED_FILES):
+        try:
+            with open(DOWNLOADED_FILES, 'r') as f:
+                downloaded = json.load(f)
+            print(f"Found {len(downloaded)} previously downloaded files")
+        except:
+            print("Starting fresh download")
+            
+    if os.path.exists(FAILED_FILES):
+        try:
+            with open(FAILED_FILES, 'r') as f:
+                failed = json.load(f)
+            print(f"Found {len(failed)} previously failed downloads")
+        except:
+            pass
+    
+    # Prepare download list
+    to_download = []
+    for uid in uids:
+        if uid.endswith(".glb"):
+            uid = uid[:-4]
+        if uid not in object_paths:
+            continue
+            
+        if uid in downloaded and os.path.exists(downloaded[uid]):
+            continue
+            
+        to_download.append((uid, object_paths[uid]))
+    
+    if not to_download:
+        return downloaded
+    
+    print(f"Downloading {len(to_download)} files with {download_processes} processes")
+    
+    # Download files
+    with multiprocessing.Pool(download_processes) as pool:
+        for i, result in enumerate(tqdm(
+            pool.imap_unordered(_download_object, to_download),
+            total=len(to_download),
+            desc="Downloading"
+        )):
+            uid, path = result
+            if path is not None:
+                downloaded[uid] = path
             else:
-                out[uid] = local_path
-        if len(args) == 0:
-            return out
-        print(
-            f"starting download of {len(args)} objects with {download_processes} processes"
-        )
-        start_file_count = len(
-            glob.glob(os.path.join(_VERSIONED_PATH, "glbs", "*", "*.glb"))
-        )
-        args = [(*arg, len(args), start_file_count) for arg in args]
-        with multiprocessing.Pool(download_processes) as pool:
-            r = pool.starmap(_download_object, args)
-            for uid, local_path in r:
-                out[uid] = local_path
-    return out
-
-
-def load_lvis_annotations() -> Dict[str, List[str]]:
-    """Load the LVIS annotations.
-
-    If the annotations are not already downloaded, they will be downloaded.
-
-    Returns:
-        A dictionary mapping the LVIS category to the list of uids in that category.
-    """
-    hf_url = f"https://huggingface.co/datasets/allenai/objaverse/resolve/main/lvis-annotations.json.gz"
-    local_path = os.path.join(_VERSIONED_PATH, "lvis-annotations.json.gz")
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    if not os.path.exists(local_path):
-        urllib.request.urlretrieve(hf_url, local_path)
-    with gzip.open(local_path, "rb") as f:
-        lvis_annotations = json.load(f)
-    return lvis_annotations
-
+                failed[uid] = time.time()
+                
+            # Save progress periodically
+            if i % 100 == 0:
+                with open(DOWNLOADED_FILES, 'w') as f:
+                    json.dump(downloaded, f)
+                with open(FAILED_FILES, 'w') as f:
+                    json.dump(failed, f)
+    
+    # Save final state
+    with open(DOWNLOADED_FILES, 'w') as f:
+        json.dump(downloaded, f)
+    with open(FAILED_FILES, 'w') as f:
+        json.dump(failed, f)
+        
+    print(f"\nDownload Summary:")
+    print(f"- Successfully downloaded: {len(downloaded)}")
+    print(f"- Failed downloads: {len(failed)}")
+    
+    return downloaded
 
 if __name__ == "__main__":
+    # Create base directory
+    os.makedirs(BASE_PATH, exist_ok=True)
     
-    # 2. Load object paths
+    # Load object paths
     print("Loading object paths...")
     object_paths = _load_object_paths()
     
-    # 3. Select first 50k models (first 10 folders)
+    # Select first 50k models
     uids = []
-    for i in range(10):  # 10 folders = 50k models (5k each)
+    for i in range(10):
         folder = f"glbs/000-{str(i).zfill(3)}"
         folder_uids = [k for k, v in object_paths.items() if v.startswith(folder)]
         uids.extend(folder_uids)
@@ -223,14 +194,12 @@ if __name__ == "__main__":
     
     print(f"\nTotal UIDs selected: {len(uids)}")
     
-    # 4. Estimate download size
-    import requests
+    # Estimate size
     print("\nEstimating total download size...")
     sample_size = 10
     total_size = 0
-    sample_uids = uids[:sample_size]
     
-    for uid in tqdm(sample_uids, desc="Sampling files"):
+    for uid in tqdm(uids[:sample_size], desc="Sampling files"):
         url = f"https://huggingface.co/datasets/allenai/objaverse/resolve/main/{object_paths[uid]}"
         try:
             response = requests.head(url, allow_redirects=True)
@@ -238,30 +207,30 @@ if __name__ == "__main__":
                 total_size += int(response.headers['content-length'])
         except:
             continue
-            
+    
     estimated_gb = (total_size / sample_size * len(uids)) / (1024**3)
     print(f"Estimated total download size: {estimated_gb:.2f} GB")
     
-    # 5. Ask for confirmation
-    response = input("\nDo you want to proceed with the download? (y/n): ")
-    if response.lower() != 'y':
+    # Confirm download
+    if input("\nProceed with download? (y/n): ").lower() != 'y':
         print("Download cancelled")
         sys.exit(0)
     
-    # 6. Load annotations and download objects
+    # Download
     print("\nLoading annotations...")
     annotations = load_annotations(uids)
     print(f"Loaded annotations for {len(annotations)} models")
     
     print("\nDownloading models...")
-    objects = load_objects(uids, download_processes=10)
+    objects = load_objects(uids, download_processes=12)  # Using 12 cores
     
-    # 7. Save annotations locally
+    # Save annotations
     annotations_file = os.path.join(BASE_PATH, "annotations.json")
     with open(annotations_file, 'w') as f:
         json.dump(annotations, f, indent=2)
     
     print(f"\nDownload complete:")
-    print(f"- Successfully downloaded {len(objects)} objects")
+    print(f"- Successfully downloaded: {len(objects)} objects")
+    print(f"- Failed downloads: {len([uid for uid in uids if uid not in objects])}")
     print(f"- Files saved to: {BASE_PATH}")
     print(f"- Annotations saved to: {annotations_file}")
