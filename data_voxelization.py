@@ -12,6 +12,8 @@ import logging
 import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
+import os
+import json
 
 def voxelize_with_color(mesh: trimesh.Trimesh,
                        pitch: float,
@@ -216,10 +218,10 @@ class VoxelizerWithAugmentation:
             # Normalize colors to [0, 1]
             colors = colors.astype(np.float32) / 255.0
             
-            # Fill RGB and occupancy
+            # Fill RGB and occupancy using alpha channel
             for idx, color in zip(indices, colors):
                 tensor[0:3, idx[0], idx[1], idx[2]] = torch.from_numpy(color[0:3])  # RGB
-                tensor[3, idx[0], idx[1], idx[2]] = 1.0  # Occupancy
+                tensor[3, idx[0], idx[1], idx[2]] = color[3]  # Alpha for occupancy
         else:
             # Create single-channel tensor (just occupancy)
             tensor = torch.zeros((1, self.resolution, self.resolution, self.resolution), 
@@ -286,26 +288,100 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, visua
     output_dir.mkdir(parents=True, exist_ok=True)
     voxelizer = VoxelizerWithAugmentation(resolution=resolution)
     
+    # Load or create processing log
+    log_file = output_dir / "processing_log.json"
+    if log_file.exists():
+        with open(log_file, 'r') as f:
+            log_data = json.load(f)
+            # Convert lists to sets for O(1) lookup
+            processed_set = set(log_data["processed"])
+            failed_set = set(log_data["failed"])
+    else:
+        log_data = {
+            "processed": [],
+            "failed": []
+        }
+        processed_set = set()
+        failed_set = set()
+    
     glb_files = list(input_dir.rglob("*.glb"))
     all_results = []
-    file_names = []
     
-    for glb_file in tqdm(glb_files):
-        results = voxelizer.process_mesh(str(glb_file))
-        if results:
-            all_results.append(results[0]) # just add the original not augmented just to see the objects
-            file_names.append(glb_file.stem)
+    # Print initial stats
+    print(f"\nTotal files found: {len(glb_files)}")
+    print(f"Already processed: {len(processed_set)}")
+    print(f"Previously failed: {len(failed_set)}")
+    
+    for glb_file in tqdm(glb_files, desc="Processing files"):
+        # O(1) lookup using set
+        if str(glb_file) in processed_set:
+            continue
             
-            relative_path = glb_file.relative_to(input_dir)
-            for i, tensor in enumerate(results):
-                suffix = "" if i == 0 else f"_aug{i}"
-                save_path = output_dir / f"{relative_path.stem}{suffix}.pt"
-                torch.save(tensor, save_path)
+        file_size_mb = os.stat(glb_file).st_size / (1e6)
+        print(f"Processing {glb_file.name} ({file_size_mb:.2f} MB)")
+            
+        try:
+            results = voxelizer.process_mesh(str(glb_file))
+                    
+            if results:
+                if len(all_results) < 5:
+                    all_results.append(results[0])
+                
+                relative_path = glb_file.relative_to(input_dir)
+                save_dir = output_dir / relative_path.parent
+                save_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save all versions
+                for i, tensor in enumerate(results):
+                    suffix = "" if i == 0 else f"_aug{i}"
+                    save_path = save_dir / f"{relative_path.stem}{suffix}.pt"
+                    torch.save(tensor, save_path)
+                
+                # Update both set and log data
+                file_str = str(glb_file)
+                processed_set.add(file_str)
+                log_data["processed"].append(file_str)
+            else:
+                # Update both set and log data for failures
+                file_str = str(glb_file)
+                failed_set.add(file_str)
+                log_data["failed"].append(file_str)
+            
+            # Save log periodically
+            if len(processed_set) % 100 == 0:
+                with open(log_file, 'w') as f:
+                    json.dump(log_data, f, indent=2)
+                    
+        except Exception as e:
+            print(f"Error processing {glb_file}: {str(e)}")
+            file_str = str(glb_file)
+            failed_set.add(file_str)
+            log_data["failed"].append(file_str)
+            # Save log after each failure
+            with open(log_file, 'w') as f:
+                json.dump(log_data, f, indent=2)
+    
+    # Save final log
+    with open(log_file, 'w') as f:
+        json.dump(log_data, f, indent=2)
+    
+    # Print processing summary
+    print("\nProcessing Summary:")
+    print(f"Successfully processed: {len(processed_set)}")
+    print(f"Failed: {len(failed_set)}")
     
     if visualize_all and all_results:
         voxelizer.visualize_results(all_results, "Dataset Visualization")
 
 if __name__ == "__main__":
-    input_dir = "/Users/PeterAM/Desktop/Research_Project/3D-BlockGen/objaverse_data/hf-objaverse-v1"
-    output_dir = "./ayre"
-    process_dataset(input_dir, output_dir, resolution=32, visualize_all=False)
+
+    input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data"
+    output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data_voxelized"
+    try:
+        process_dataset(input_dir, output_dir, resolution=32, visualize_all=False)
+    except KeyboardInterrupt:
+        print("\nProcessing interrupted by user")
+    except Exception as e:
+        print(f"Error during processing: {str(e)}")
+        import traceback
+        traceback.print_exc()
