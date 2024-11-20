@@ -1,0 +1,510 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, random_split
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from transformers import CLIPTokenizer, CLIPTextModel
+from pathlib import Path
+from tqdm import tqdm
+import json
+import time
+from diffusers import UNet3DConditionModel
+from diffusion import DiffusionModel3D
+
+
+class VoxelConfig:
+    """Configuration for voxel processing"""
+    def __init__(self, 
+                 use_rgb=False,
+                 default_color=[0.5, 0.5, 0.5],  # Default gray
+                 alpha_weight=1.0,
+                 rgb_weight=1.0):
+        """
+        Args:
+            use_rgb: Whether to use RGB+alpha channels
+            default_color: Default RGB values for occupancy-only data
+            alpha_weight: Weight for occupancy/alpha loss
+            rgb_weight: Weight for RGB loss when using colors
+        """
+        self.use_rgb = use_rgb
+        self.default_color = torch.tensor(default_color)
+        self.in_channels = 4 if use_rgb else 1
+        self.alpha_weight = alpha_weight
+        self.rgb_weight = rgb_weight
+    
+    def get_loss_fn(self, device):
+        """Returns appropriate loss function"""
+        if self.use_rgb:
+            return RGBALoss(
+                alpha_weight=self.alpha_weight,
+                rgb_weight=self.rgb_weight
+            ).to(device)
+        return nn.BCEWithLogitsLoss().to(device)
+
+class RGBALoss(nn.Module):
+    """Combined loss for RGBA voxels"""
+    def __init__(self, alpha_weight=1.0, rgb_weight=1.0):
+        super().__init__()
+        self.alpha_weight = alpha_weight
+        self.rgb_weight = rgb_weight
+        self.bce_loss = nn.BCEWithLogitsLoss()  # Better for binary classification, because we need class probabilities
+    
+    def forward(self, model_output, noisy_sample, timesteps, target, diffusion_model):
+        """
+        Args:
+            model_output: Predicted noise
+            noise: Target noise
+            noisy_sample: Current noisy input
+            timesteps: Current timesteps
+            target: Original clean sample [B, 4, H, W, D] (R, G, B, alpha)
+            diffusion_model: DiffusionModel3D instance for scheduler access
+        """
+        # Predict original sample
+        pred_original = diffusion_model.predict_original_sample(
+            noisy_sample, model_output, timesteps
+        )
+        
+        # Split channels - RGBA format
+        pred_rgb = pred_original[:, :3]  # First 3 channels are RGB
+        pred_alpha = pred_original[:, 3]  # Last channel is alpha
+        
+        true_rgb = target[:, :3]  # RGB channels
+        true_alpha = target[:, 3]  # Alpha channel
+        
+        # Binary Cross Entropy for alpha/occupancy
+        alpha_loss = self.bce_loss(pred_alpha, true_alpha)
+        
+        # MSE for RGB weighted by true occupancy
+        true_alpha_expanded = true_alpha.unsqueeze(1)  # [B, 1, H, W, D]
+        rgb_loss = F.mse_loss(
+            true_alpha_expanded * pred_rgb,
+            true_alpha_expanded * true_rgb
+        )
+        
+        return self.alpha_weight * alpha_loss + self.rgb_weight * rgb_loss
+
+class VoxelTextDataset(Dataset):
+    """Dataset for text-conditioned voxel generation"""
+    tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32") # Now static to all instances
+
+    def __init__(self, voxel_dir, annotation_file, config: VoxelConfig):
+        self.voxel_dir = Path(voxel_dir)
+        self.config = config
+        
+        
+        # Load annotations
+        with open(annotation_file, 'r') as f:
+            self.annotations = json.load(f)
+        
+        # Get all files recursively
+        self.files = []
+        for pt_file in tqdm(self.voxel_dir.rglob("*.pt"), desc="Finding voxel files"):
+            if "_aug" not in pt_file.name:
+                self.files.append(pt_file)
+                for i in range(1, 4):
+                    aug_file = pt_file.with_name(f"{pt_file.stem}_aug{i}.pt")
+                    if aug_file.exists():
+                        self.files.append(aug_file)
+        
+        print(f"\nFound {len(self.files)} files (including augmentations)")
+        
+    def _process_voxel_data(self, voxel_data):
+        """Process voxel data according to configuration"""
+        if self.config.use_rgb:
+            if voxel_data.shape[0] == 4:
+                # Already in RGBA format
+                alpha = (voxel_data[3:4] > 0).float()
+                rgb = voxel_data[:3]
+                return torch.cat([alpha, rgb], dim=0)
+            else:
+                # Convert occupancy to RGBA
+                alpha = (voxel_data > 0).float()  # [1, H, W, D]
+                rgb = self.config.default_color.view(3, 1, 1, 1).to(voxel_data.device)
+                rgb = rgb.repeat(1, *voxel_data.shape[1:])  # [3, H, W, D]
+                return torch.cat([alpha, rgb], dim=0)  # [4, H, W, D]
+        else:
+            if voxel_data.shape[0] > 1:
+                voxel_data = voxel_data[-1:] # take the last one which is occupancy
+
+            return (voxel_data > 0).float()
+    
+    def _create_simple_prompt(self, model_id):
+        if model_id in self.annotations:
+            name = self.annotations[model_id].get('name', 'an object')
+            return f"a 3D model of {name}"
+        return "a 3D model of an object"
+    
+    def _create_detailed_prompt(self, model_id):
+        if model_id in self.annotations:
+            name = self.annotations[model_id].get('name', 'an object')
+            categories = [cat['name'] for cat in self.annotations[model_id].get('categories', [])]
+            tags = [tag['name'] for tag in self.annotations[model_id].get('tags', [])]
+            
+            prompt_parts = [f"a 3D model of {name}"]
+            if categories:
+                prompt_parts.append(f"in category {', '.join(categories)}")
+            if tags:
+                prompt_parts.append(f"with traits: {', '.join(tags)}")
+            
+            return ' '.join(prompt_parts)
+        return "a 3D model of an object"
+    
+    def _get_random_prompt(self, model_id):
+        rand = torch.rand(1).item()
+        if rand < 0.10:
+            return ""
+        elif rand < 0.55:
+            return self._create_detailed_prompt(model_id)
+        else:
+            return self._create_simple_prompt(model_id)
+    
+    def __len__(self):
+        return len(self.files)
+    
+    @staticmethod
+    def collate_fn(batch):
+        voxels = torch.stack([item['voxels'] for item in batch])
+        prompts = [item['text'] for item in batch]
+        
+        
+        tokens = VoxelTextDataset.tokenizer(
+            prompts,
+            padding=True,
+            truncation=True,
+            max_length=77,
+            return_tensors="pt"
+            # clean_up_tokenization_spaces=True  # Not available in current version Sometimes fires a warning
+        )
+        
+        return {
+            'voxels': voxels,
+            **tokens
+        }
+    
+    def __getitem__(self, idx):
+        file_path = self.files[idx]
+        model_id = file_path.stem.split('_aug')[0]
+        
+        voxel_data = torch.load(file_path)
+        voxel_data = self._process_voxel_data(voxel_data)
+        
+        return {
+            'voxels': voxel_data,
+            'text': self._get_random_prompt(model_id)
+        }
+
+class DiffusionTrainer:
+    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4):
+        self.model = model
+        self.model.to(device) # DO NOT FORGET
+        self.config = config
+        self.device = device
+        self.initial_lr = initial_lr
+        self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+        self.text_encoder.eval()
+        self.loss_fn = config.get_loss_fn(device)
+    
+    def evaluate(self, dataloader):
+        self.model.eval()
+        total_loss = 0.0
+        num_batches = 0
+        
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc="Evaluating"):
+                voxels = batch['voxels'].to(self.device)
+                text_inputs = {
+                    k: v.to(self.device) 
+                    for k, v in batch.items() 
+                    if k not in ['voxels']
+                }
+                
+                encoder_outputs = self.text_encoder(**text_inputs)
+                encoder_hidden_states = encoder_outputs.last_hidden_state
+                
+                noise = torch.randn_like(voxels)
+                timesteps = torch.randint(
+                    0, self.model.noise_scheduler.config.num_train_timesteps,
+                    (voxels.shape[0],), device=self.device
+                ).long()
+                
+                noisy_voxels = self.model.add_noise(voxels, noise, timesteps)
+                predicted_noise = self.model(
+                    noisy_voxels,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    return_dict=True
+                ).sample
+                
+                pred_original = self.model.predict_original_sample(
+                    noisy_voxels, predicted_noise, timesteps
+                )
+                
+                if self.config.use_rgb:
+                    loss = self.loss_fn(
+                        model_output=predicted_noise,
+                        noisy_sample=noisy_voxels,
+                        timesteps=timesteps,
+                        target=voxels,
+                        diffusion_model=self.model
+                    )
+                else:
+                    loss = self.loss_fn(pred_original, voxels) # Because shape is [B, 1, H, W, D] maybe need to squeeze(1) to check
+                
+                total_loss += loss.item()
+                num_batches += 1
+        
+        avg_loss = total_loss / num_batches
+        print(f"Test Loss: {avg_loss:.4f}")
+        return avg_loss
+    
+    def train_step(self, batch, optimizer):
+        """Performs a single training step"""
+        voxels = batch['voxels'].to(self.device)
+        text_inputs = {
+            k: v.to(self.device) 
+            for k, v in batch.items() 
+            if k not in ['voxels']
+        }
+        
+        with torch.no_grad():
+            encoder_outputs = self.text_encoder(**text_inputs)
+            encoder_hidden_states = encoder_outputs.last_hidden_state
+        
+        # Sample noise and timesteps
+        noise = torch.randn_like(voxels)
+        timesteps = torch.randint(
+            0, self.model.noise_scheduler.config.num_train_timesteps,
+            (voxels.shape[0],), device=self.device
+        ).long()
+        
+        # Add noise
+        noisy_voxels = self.model.add_noise(voxels, noise, timesteps)
+        
+        # Predict noise
+        predicted_noise = self.model(
+            noisy_voxels,
+            timesteps,
+            encoder_hidden_states=encoder_hidden_states,
+            return_dict=True
+        ).sample
+        
+        # Predict original sample from noise prediction
+        pred_original = self.model.predict_original_sample(
+            noisy_voxels, predicted_noise, timesteps
+        )
+        
+        # Calculate loss
+        if self.config.use_rgb:
+            loss = self.loss_fn(
+                model_output=predicted_noise, 
+                noisy_sample=noisy_voxels,
+                timesteps=timesteps,
+                target=voxels,
+                diffusion_model=self.model
+            )
+        else:
+            loss = self.loss_fn(pred_original, voxels) # Because shape is [B, 1, H, W, D] maybe need to squeeze(1) to check
+        
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        
+        return loss.item()
+        
+    def train(self, train_dataloader, test_dataloader, 
+        total_steps=100_000, 
+        save_every=20_000,
+        eval_every=20_000,
+        save_dir='training_runs'):
+        """
+        Train the diffusion model with organized checkpointing.
+        
+        Args:
+            save_dir (str): Base directory for saving all training artifacts
+        """
+        # Create directory structure
+        save_dir = Path(save_dir)
+        checkpoints_dir = save_dir / "checkpoints"  # For full state checkpoints
+        models_dir = save_dir / "models"  # For model-only states
+        best_model_dir = save_dir / "best_model"  # For best performing model
+        
+        # Create directories
+        for dir_path in [checkpoints_dir, models_dir, best_model_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+        
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(), 
+            lr=self.initial_lr, 
+            weight_decay=0.01
+        )
+        scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
+        
+        best_test_loss = float('inf')
+        losses = []
+        test_losses = []
+        current_step = 0
+        
+        # Save training config
+        training_config = {
+            'total_steps': total_steps,
+            'save_every': save_every,
+            'eval_every': eval_every,
+            'initial_lr': self.initial_lr,
+            'device': str(self.device),
+            'start_time': time.strftime("%Y%m%d-%H%M%S")
+        }
+        
+        with open(save_dir / "training_config.json", 'w') as f:
+            json.dump(training_config, f, indent=2)
+        
+        # Create infinite dataloader
+        train_iter = iter(train_dataloader)
+        
+        # Save losses to file periodically
+        def save_losses():
+            loss_data = {
+                'training_losses': losses,
+                'test_losses': test_losses,
+                'test_steps': list(range(0, len(test_losses) * eval_every, eval_every))
+            }
+            with open(save_dir / "losses.json", 'w') as f:
+                json.dump(loss_data, f)
+        
+        with tqdm(total=total_steps, desc="Training") as pbar:
+            while current_step < total_steps:
+                self.model.train()
+                
+                # Get next batch (restart if dataloader is exhausted)
+                try:
+                    batch = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_dataloader)
+                    batch = next(train_iter)
+                
+                # Perform training step
+                loss = self.train_step(batch, optimizer)
+                scheduler.step()
+                
+                # Update tracking
+                current_step += 1
+                losses.append(loss)
+                pbar.update(1)
+                pbar.set_postfix({
+                    'loss': f"{loss:.4f}",
+                    'lr': f"{scheduler.get_last_lr()[0]:.6f}"
+                })
+                
+                # Evaluation
+                if current_step % eval_every == 0:
+                    test_loss = self.evaluate(test_dataloader)
+                    test_losses.append(test_loss)
+                    
+                    # Save best model
+                    if test_loss < best_test_loss:
+                        best_test_loss = test_loss
+                        best_model_path = best_model_dir / f"model_step_{current_step}_loss_{test_loss:.4f}.pth"
+                        
+                        # Remove previous best model(s)
+                        for old_model in best_model_dir.glob("*.pth"):
+                            old_model.unlink()
+                        
+                        # Save new best model
+                        torch.save(self.model.state_dict(), best_model_path)
+                        print(f"\nNew best model saved with Test Loss: {test_loss:.4f}")
+                    
+                    # Save losses
+                    save_losses()
+                
+                # Regular checkpoints
+                if current_step % save_every == 0:
+                    # Save model state only
+                    model_path = models_dir / f"model_step_{current_step}.pth"
+                    torch.save(self.model.state_dict(), model_path)
+                    
+                    # Save full checkpoint
+                    checkpoint_path = checkpoints_dir / f"checkpoint_step_{current_step}.pth"
+                    torch.save({
+                        'step': current_step,
+                        'model_state_dict': self.model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'loss': loss,
+                        'test_loss': test_losses[-1] if test_losses else None,
+                        'current_lr': scheduler.get_last_lr()[0]
+                    }, checkpoint_path)
+                    
+                    # Remove old checkpoints (keep last 5)
+                    checkpoint_files = sorted(checkpoints_dir.glob("checkpoint_step_*.pth"))
+                    if len(checkpoint_files) > 5:
+                        for old_ckpt in checkpoint_files[:-5]:
+                            old_ckpt.unlink()
+        
+        # Final saves
+        save_losses()
+        torch.save(self.model.state_dict(), models_dir / "final_model.pth")
+        
+        return losses, test_losses
+
+def create_dataloaders(voxel_dir, annotation_file, config: VoxelConfig, 
+                      batch_size=32, test_split=0.1):
+    """Create train and test dataloaders"""
+    dataset = VoxelTextDataset(voxel_dir, annotation_file, config)
+    
+    train_size = int((1 - test_split) * len(dataset))
+    test_size = len(dataset) - train_size
+    train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        collate_fn=VoxelTextDataset.collate_fn
+    )
+    
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        collate_fn=VoxelTextDataset.collate_fn
+    )
+    
+    return train_loader, test_loader
+
+def create_model_and_trainer(config: VoxelConfig, resolution=32, device='cuda'):
+    """Creates model and trainer with specified configuration
+    
+    Args:
+        config: VoxelConfig object specifying model configuration
+        resolution: Size of voxel grid (default: 32)
+        device: Device to put model on (default: 'cuda')
+    """
+    model = UNet3DConditionModel(
+        sample_size=resolution,
+        in_channels=config.in_channels,
+        out_channels=config.in_channels,
+        layers_per_block=2,
+        block_out_channels=(64, 128, 256, 512),
+        down_block_types=(
+            "CrossAttnDownBlock3D",
+            "CrossAttnDownBlock3D",
+            "CrossAttnDownBlock3D",
+            "DownBlock3D",
+        ),
+        up_block_types=(
+            "UpBlock3D",
+            "CrossAttnUpBlock3D",
+            "CrossAttnUpBlock3D",
+            "CrossAttnUpBlock3D",
+        ),
+        cross_attention_dim=512,
+    )
+
+    print(f"Total parameters: {sum(p.numel() for p in model.parameters())}")
+    
+    diffusion_model = DiffusionModel3D(model, num_timesteps=1000)
+    trainer = DiffusionTrainer(diffusion_model, config, device=device)
+    
+    return trainer, diffusion_model
