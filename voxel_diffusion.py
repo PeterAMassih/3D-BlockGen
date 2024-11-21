@@ -12,6 +12,9 @@ from diffusers import UNet3DConditionModel
 from diffusion import DiffusionModel3D
 
 
+## ADD SEED: IMPORTANT FOR REPRO 
+## USE EMA MAYBE
+
 class VoxelConfig:
     """Configuration for voxel processing"""
     def __init__(self, 
@@ -75,6 +78,7 @@ class RGBALoss(nn.Module):
         alpha_loss = self.bce_loss(pred_alpha, true_alpha)
         
         # MSE for RGB weighted by true occupancy
+        # IF add RGBAO occupancy change to pred_rgba
         true_alpha_expanded = true_alpha.unsqueeze(1)  # [B, 1, H, W, D]
         rgb_loss = F.mse_loss(
             true_alpha_expanded * pred_rgb,
@@ -124,14 +128,14 @@ class VoxelTextDataset(Dataset):
                 return torch.cat([alpha, rgb], dim=0)  # [4, H, W, D]
         else:
             if voxel_data.shape[0] > 1:
-                voxel_data = voxel_data[-1:] # take the last one which is occupancy
+                voxel_data = voxel_data[-1:] # take the last one which is occupancy TODO IF RGBAO change
 
             return (voxel_data > 0).float()
     
     def _create_simple_prompt(self, model_id):
         if model_id in self.annotations:
             name = self.annotations[model_id].get('name', 'an object')
-            return f"a 3D model of {name}"
+            return f"a 3D model of {name}" # remove a 3d model of
         return "a 3D model of an object"
     
     def _create_detailed_prompt(self, model_id):
@@ -140,7 +144,7 @@ class VoxelTextDataset(Dataset):
             categories = [cat['name'] for cat in self.annotations[model_id].get('categories', [])]
             tags = [tag['name'] for tag in self.annotations[model_id].get('tags', [])]
             
-            prompt_parts = [f"a 3D model of {name}"]
+            prompt_parts = [f"a 3D model of {name}"] # REMOVE a 3d model of
             if categories:
                 prompt_parts.append(f"in category {', '.join(categories)}")
             if tags:
@@ -152,10 +156,13 @@ class VoxelTextDataset(Dataset):
     def _get_random_prompt(self, model_id):
         rand = torch.rand(1).item()
         if rand < 0.10:
+            #print("")
             return ""
         elif rand < 0.55:
+            #print(self._create_detailed_prompt(model_id))
             return self._create_detailed_prompt(model_id)
         else:
+            #print(self._create_simple_prompt(model_id))
             return self._create_simple_prompt(model_id)
     
     def __len__(self):
@@ -210,7 +217,7 @@ class DiffusionTrainer:
         num_batches = 0
         
         with torch.no_grad():
-            for batch in tqdm(dataloader, desc="Evaluating"):
+            for batch in tqdm(dataloader, desc="Evaluating", leave=False):
                 voxels = batch['voxels'].to(self.device)
                 text_inputs = {
                     k: v.to(self.device) 
@@ -260,6 +267,7 @@ class DiffusionTrainer:
     def train_step(self, batch, optimizer):
         """Performs a single training step"""
         voxels = batch['voxels'].to(self.device)
+        # print(voxels.shape)
         text_inputs = {
             k: v.to(self.device) 
             for k, v in batch.items() 
@@ -316,20 +324,18 @@ class DiffusionTrainer:
         total_steps=100_000, 
         save_every=20_000,
         eval_every=20_000,
-        save_dir='training_runs'):
+        save_dir='training_runs',
+        checkpoint_path=None):
         """
         Train the diffusion model with organized checkpointing.
-        
-        Args:
-            save_dir (str): Base directory for saving all training artifacts
+        Continues training seamlessly from checkpoint if provided.
         """
         # Create directory structure
         save_dir = Path(save_dir)
-        checkpoints_dir = save_dir / "checkpoints"  # For full state checkpoints
-        models_dir = save_dir / "models"  # For model-only states
-        best_model_dir = save_dir / "best_model"  # For best performing model
+        checkpoints_dir = save_dir / "checkpoints"
+        models_dir = save_dir / "models"
+        best_model_dir = save_dir / "best_model"
         
-        # Create directories
         for dir_path in [checkpoints_dir, models_dir, best_model_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
         
@@ -338,12 +344,38 @@ class DiffusionTrainer:
             lr=self.initial_lr, 
             weight_decay=0.01
         )
-        scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
         
+        # Initialize training state
         best_test_loss = float('inf')
         losses = []
         test_losses = []
         current_step = 0
+        starting_step = 0  # Track where we started for plotting
+    
+        # Load checkpoint if provided
+        if checkpoint_path is not None:
+            print(f"Resuming training from checkpoint: {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+            current_step = checkpoint['step']
+            starting_step = current_step  # Remember where we resumed from
+            best_test_loss = checkpoint.get('best_test_loss', float('inf'))
+            
+            # Load previous losses
+            if 'training_losses' in checkpoint:
+                losses = checkpoint['training_losses']
+                test_losses = checkpoint.get('test_losses', [])
+                print(f"Loaded {len(losses)} previous training losses and {len(test_losses)} test losses")
+            
+            print(f"Resumed at step {current_step} with best test loss: {best_test_loss:.4f}")
+        
+        # Create/update scheduler with remaining steps
+        remaining_steps = total_steps - current_step
+        scheduler = CosineAnnealingLR(optimizer, T_max=remaining_steps, eta_min=1e-6)
+        if checkpoint_path is not None and 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
         # Save training config
         training_config = {
@@ -352,7 +384,9 @@ class DiffusionTrainer:
             'eval_every': eval_every,
             'initial_lr': self.initial_lr,
             'device': str(self.device),
-            'start_time': time.strftime("%Y%m%d-%H%M%S")
+            'start_time': time.strftime("%Y%m%d-%H%M%S"),
+            'resume_checkpoint': checkpoint_path,
+            'starting_step': starting_step
         }
         
         with open(save_dir / "training_config.json", 'w') as f:
@@ -361,28 +395,32 @@ class DiffusionTrainer:
         # Create infinite dataloader
         train_iter = iter(train_dataloader)
         
-        # Save losses to file periodically
+        # Save losses function
         def save_losses():
             loss_data = {
                 'training_losses': losses,
                 'test_losses': test_losses,
-                'test_steps': list(range(0, len(test_losses) * eval_every, eval_every))
+                'test_steps': list(range(0, len(test_losses) * eval_every, eval_every)),
+                'starting_step': starting_step,
+                'current_step': current_step
             }
             with open(save_dir / "losses.json", 'w') as f:
                 json.dump(loss_data, f)
         
-        with tqdm(total=total_steps, desc="Training") as pbar:
+        # Main training loop
+        steps_to_run = total_steps - current_step
+        with tqdm(total=steps_to_run, initial=current_step, desc="Training") as pbar:
             while current_step < total_steps:
                 self.model.train()
                 
-                # Get next batch (restart if dataloader is exhausted)
+                # Get next batch
                 try:
                     batch = next(train_iter)
                 except StopIteration:
                     train_iter = iter(train_dataloader)
                     batch = next(train_iter)
-                
-                # Perform training step
+    
+                # Training step
                 loss = self.train_step(batch, optimizer)
                 scheduler.step()
                 
@@ -409,16 +447,14 @@ class DiffusionTrainer:
                         for old_model in best_model_dir.glob("*.pth"):
                             old_model.unlink()
                         
-                        # Save new best model
                         torch.save(self.model.state_dict(), best_model_path)
                         print(f"\nNew best model saved with Test Loss: {test_loss:.4f}")
                     
-                    # Save losses
                     save_losses()
                 
                 # Regular checkpoints
                 if current_step % save_every == 0:
-                    # Save model state only
+                    # Save model state
                     model_path = models_dir / f"model_step_{current_step}.pth"
                     torch.save(self.model.state_dict(), model_path)
                     
@@ -431,10 +467,14 @@ class DiffusionTrainer:
                         'scheduler_state_dict': scheduler.state_dict(),
                         'loss': loss,
                         'test_loss': test_losses[-1] if test_losses else None,
-                        'current_lr': scheduler.get_last_lr()[0]
+                        'current_lr': scheduler.get_last_lr()[0],
+                        'best_test_loss': best_test_loss,
+                        'training_losses': losses,
+                        'test_losses': test_losses,
+                        'starting_step': starting_step
                     }, checkpoint_path)
                     
-                    # Remove old checkpoints (keep last 5)
+                    # Keep only last 5 checkpoints
                     checkpoint_files = sorted(checkpoints_dir.glob("checkpoint_step_*.pth"))
                     if len(checkpoint_files) > 5:
                         for old_ckpt in checkpoint_files[:-5]:

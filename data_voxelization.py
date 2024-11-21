@@ -48,7 +48,7 @@ def voxelize_with_color(mesh: trimesh.Trimesh,
         colors = None
 
     # Process colors if they exist and are valid
-    if colors is not None:
+    if colors is not None: # colors (num_vert, RGB)
         colors = np.asarray(colors)
         if len(colors.shape) != 2:  # Ensure 2D array
             colors = None
