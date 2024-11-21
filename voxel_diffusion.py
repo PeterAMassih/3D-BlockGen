@@ -15,6 +15,22 @@ from diffusion import DiffusionModel3D
 ## ADD SEED: IMPORTANT FOR REPRO 
 ## USE EMA MAYBE
 
+class SharpBCEWithLogitsLoss(nn.Module):
+    def __init__(self, sharpness_weight=0.6):
+        super().__init__()
+        self.bce = nn.BCEWithLogitsLoss()
+        self.sharpness_weight = sharpness_weight
+        
+    def forward(self, pred, target):
+        # Standard BCE loss
+        bce_loss = self.bce(pred, target) # logits loss
+        
+        # Sharpening loss: penalize values close to 0.5
+        probs = torch.sigmoid(pred)
+        sharpness_loss = -torch.mean(torch.abs(probs - 0.5))
+        
+        return bce_loss + self.sharpness_weight * sharpness_loss
+
 class VoxelConfig:
     """Configuration for voxel processing"""
     def __init__(self, 
@@ -42,7 +58,7 @@ class VoxelConfig:
                 alpha_weight=self.alpha_weight,
                 rgb_weight=self.rgb_weight
             ).to(device)
-        return nn.BCEWithLogitsLoss().to(device)
+        return SharpBCEWithLogitsLoss().to(device)
 
 class RGBALoss(nn.Module):
     """Combined loss for RGBA voxels"""
@@ -487,7 +503,7 @@ class DiffusionTrainer:
         return losses, test_losses
 
 def create_dataloaders(voxel_dir, annotation_file, config: VoxelConfig, 
-                      batch_size=32, test_split=0.1):
+                      batch_size=32, test_split=0.05):
     """Create train and test dataloaders"""
     dataset = VoxelTextDataset(voxel_dir, annotation_file, config)
     
