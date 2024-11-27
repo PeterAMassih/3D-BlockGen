@@ -52,7 +52,7 @@ class DiffusionInference3D:
                 if show_intermediate:
                     print(f"timestep: {t}")
                     self.visualize_samples(sample, threshold=0.5) 
-                    self.visualize_samples(pred_original_sampl, threshold=0.5)  
+                    self.visualize_samples(pred_original_sample, threshold=0.5)  
     
                 sample = self.noise_scheduler.step(residual, t, sample).prev_sample
     
