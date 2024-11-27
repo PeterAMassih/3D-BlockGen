@@ -51,15 +51,15 @@ class DiffusionInference3D:
                 
                 if show_intermediate:
                     print(f"timestep: {t}")
-                    self.visualize_samples(torch.sigmoid(sample), threshold=0.5)  # Apply sigmoid
-                    self.visualize_samples(torch.sigmoid(pred_original_sample), threshold=0.5)  # Apply sigmoid
+                    self.visualize_samples(sample, threshold=0.5) 
+                    self.visualize_samples(pred_original_sampl, threshold=0.5)  
     
                 sample = self.noise_scheduler.step(residual, t, sample).prev_sample
     
                 # if t.item() < 500:
                 #     return torch.sigmoid(pred_original_sample)  # Apply sigmoid
     
-            return torch.sigmoid(sample)  # Apply sigmoid
+            return sample  #
 
     def sample_ddim(self, prompt, num_samples=8, image_size=(32, 32, 32), num_inference_steps=50, show_intermediate=False):
         num_channels = 4 if self.config.use_rgb else 1

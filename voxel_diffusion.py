@@ -22,12 +22,12 @@ class SharpBCEWithLogitsLoss(nn.Module):
         self.sharpness_weight = sharpness_weight
         
     def forward(self, pred, target):
-        # Standard BCE loss
-        bce_loss = self.bce(pred, target) # logits loss
+        # Standard BCE loss with the logits
+        bce_loss = self.bce(pred, target)
         
-        # Sharpening loss: penalize values close to 0.5
         probs = torch.sigmoid(pred)
-        sharpness_loss = -torch.mean(torch.abs(probs - 0.5))
+        # Now we add loss when close to 0.5 instead of subtracting when far from 0.5
+        sharpness_loss = torch.mean(1.0 - torch.abs(probs - 0.5) * 2)
         
         return bce_loss + self.sharpness_weight * sharpness_loss
 
@@ -58,7 +58,7 @@ class VoxelConfig:
                 alpha_weight=self.alpha_weight,
                 rgb_weight=self.rgb_weight
             ).to(device)
-        return SharpBCEWithLogitsLoss().to(device)
+        return nn.MSELoss().to(device)
 
 class RGBALoss(nn.Module):
     """Combined loss for RGBA voxels"""
