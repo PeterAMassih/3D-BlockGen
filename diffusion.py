@@ -40,23 +40,25 @@ class DiffusionModel3D(nn.Module):
         self.model = model
         self.config = config
         self.noise_scheduler = DDPMScheduler(num_train_timesteps=config.num_timesteps)
-        
+
         # Initialize EMA if configured
         self.ema_model = None
         if config.use_ema:
             self.ema_model = EMAModel(
-                model.parameters(),
+                parameters=model.parameters(),
                 decay=config.ema_decay,
-                model_cls=type(model),  # Use same class as base model
-                model_config=model.config,
+                update_after_step=config.ema_update_after_step,
+                model_cls=type(model),
+                model_config=model.config
             )
             self.ema_model.to(config.ema_device)
-        
+
     def update_ema(self, step=None):
-        """Update EMA model if enabled"""
+        """Update EMA model if enabled."""
         if self.ema_model is not None:
             if step is None or step >= self.config.ema_update_after_step:
                 self.ema_model.step(self.model.parameters())
+
 
     def forward(self, x, timesteps, encoder_hidden_states=None, return_dict=True):
         return self.model(
@@ -84,20 +86,16 @@ class DiffusionModel3D(nn.Module):
         return pred_original
 
     def save_pretrained(self, save_path):
-        """Save both main model and EMA model if enabled"""
-        # Save main model
-        torch.save(self.model.state_dict(), f"{save_path}_main.pth")
-        
-        # Save EMA model if enabled
+        """Save both main model and EMA model if enabled."""
+        self.model.save_pretrained(f"{save_path}_main")
+
         if self.ema_model is not None:
-            ema_state = self.model.state_dict()  # Get a copy of current model state
-            self.ema_model.copy_to(ema_state)  # Copy EMA weights into it
-            torch.save(ema_state, f"{save_path}_ema.pth")
-    
-    def load_pretrained(self, load_path, load_ema=False):
-        """Load model weights, optionally from EMA checkpoint"""
+            self.ema_model.save_pretrained(f"{save_path}_ema")
+
+    def load_pretrained(self, save_path, load_ema=False):
+        """Load model weights, optionally from EMA checkpoint."""
         if load_ema and self.ema_model is not None:
-            state_dict = torch.load(f"{load_path}_ema.pth")
+            self.ema_model = EMAModel.from_pretrained(f"{save_path}_ema", model_cls=type(self.model))
+            self.ema_model.copy_to(self.model.parameters())
         else:
-            state_dict = torch.load(f"{load_path}_main.pth")
-        self.model.load_state_dict(state_dict)
+            self.model.from_pretrained(f"{save_path}_main")

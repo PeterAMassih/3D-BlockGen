@@ -39,7 +39,7 @@ def main():
         seed=42  # Set seed for reproducibility
     )
     # Paths
-    data_dir = Path('ayre')
+    data_dir = Path('objaverse_data_voxelized')
     annotation_file = Path('objaverse_data/annotations.json')
     save_dir = Path('runs/experiment_5')
     checkpoint_path = None  # Set to path if resuming training
