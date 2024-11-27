@@ -502,10 +502,10 @@ class DiffusionTrainer:
         
         return metrics
 
-def create_dataloaders(voxel_dir, annotation_file, config: DiffusionConfig, 
+def create_dataloaders(voxel_dir, annotation_file, config: DiffusionConfig, config_voxel: VoxelConfig, 
                       batch_size=32, test_split=0.05):
     """Create train and test dataloaders"""
-    dataset = VoxelTextDataset(voxel_dir, annotation_file, config)
+    dataset = VoxelTextDataset(voxel_dir, annotation_file, config_voxel)
     
     train_size = int((1 - test_split) * len(dataset))
     test_size = len(dataset) - train_size
@@ -572,7 +572,6 @@ def create_model_and_trainer(voxel_config: VoxelConfig, diffusion_config: Diffus
     # Use diffusion_config here
     diffusion_model = DiffusionModel3D(
         model, 
-        num_timesteps=diffusion_config.num_timesteps,
         config=diffusion_config
     )
     

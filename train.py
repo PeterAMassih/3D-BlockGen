@@ -39,7 +39,7 @@ def main():
         seed=42  # Set seed for reproducibility
     )
     # Paths
-    data_dir = Path('objaverse_data_voxelized')
+    data_dir = Path('ayre')
     annotation_file = Path('objaverse_data/annotations.json')
     save_dir = Path('runs/experiment_5')
     checkpoint_path = None  # Set to path if resuming training
@@ -49,6 +49,7 @@ def main():
         voxel_dir=data_dir,
         annotation_file=annotation_file,
         config=diffusion_config,
+        config_voxel=voxel_config,
         batch_size=train_params['batch_size'],
         test_split=train_params['test_split']
     )

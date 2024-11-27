@@ -36,7 +36,7 @@ class DiffusionConfig:
 
 class DiffusionModel3D(nn.Module):
     def __init__(self, model, config: DiffusionConfig):
-        super(DiffusionModel3D, self).__init__()
+        super().__init__()
         self.model = model
         self.config = config
         self.noise_scheduler = DDPMScheduler(num_train_timesteps=config.num_timesteps)
@@ -49,8 +49,8 @@ class DiffusionModel3D(nn.Module):
                 decay=config.ema_decay,
                 model_cls=type(model),  # Use same class as base model
                 model_config=model.config,
-                device=config.ema_device
             )
+            self.ema_model.to(config.ema_device)
         
     def update_ema(self, step=None):
         """Update EMA model if enabled"""
