@@ -1,12 +1,62 @@
 import torch
 import torch.nn as nn
-from diffusers import DDPMScheduler
+from diffusers import DDPMScheduler, EMAModel
+import numpy as np
+import random
+
+class DiffusionConfig:
+    """Configuration for diffusion model training"""
+    def __init__(self,
+                 num_timesteps=1000,
+                 use_ema=False,
+                 ema_decay=0.9999,
+                 ema_update_after_step=0,
+                 ema_device='cuda',
+                 seed=None):
+        self.num_timesteps = num_timesteps
+        self.use_ema = use_ema
+        self.ema_decay = ema_decay
+        self.ema_update_after_step = ema_update_after_step
+        self.ema_device = ema_device
+        self.seed = seed
+        
+        if seed is not None:
+            # Set main seeds
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            np.random.seed(seed)
+            random.seed(seed)
+            # Basic CUDA settings for reproducibility
+            torch.backends.cudnn.deterministic = True
+            # Create generator for DataLoader
+            self.generator = torch.Generator().manual_seed(seed)
+        else:
+            self.generator = None
+
 
 class DiffusionModel3D(nn.Module):
-    def __init__(self, model, num_timesteps=1000):
+    def __init__(self, model, config: DiffusionConfig):
         super(DiffusionModel3D, self).__init__()
         self.model = model
-        self.noise_scheduler = DDPMScheduler(num_train_timesteps=num_timesteps)
+        self.config = config
+        self.noise_scheduler = DDPMScheduler(num_train_timesteps=config.num_timesteps)
+        
+        # Initialize EMA if configured
+        self.ema_model = None
+        if config.use_ema:
+            self.ema_model = EMAModel(
+                model.parameters(),
+                decay=config.ema_decay,
+                model_cls=type(model),  # Use same class as base model
+                model_config=model.config,
+                device=config.ema_device
+            )
+        
+    def update_ema(self, step=None):
+        """Update EMA model if enabled"""
+        if self.ema_model is not None:
+            if step is None or step >= self.config.ema_update_after_step:
+                self.ema_model.step(self.model.parameters())
 
     def forward(self, x, timesteps, encoder_hidden_states=None, return_dict=True):
         return self.model(
@@ -32,3 +82,22 @@ class DiffusionModel3D(nn.Module):
         # Predict original sample
         pred_original = (noisy_sample - (beta_prod ** 0.5) * noise_pred) / (alpha_prod ** 0.5)
         return pred_original
+
+    def save_pretrained(self, save_path):
+        """Save both main model and EMA model if enabled"""
+        # Save main model
+        torch.save(self.model.state_dict(), f"{save_path}_main.pth")
+        
+        # Save EMA model if enabled
+        if self.ema_model is not None:
+            ema_state = self.model.state_dict()  # Get a copy of current model state
+            self.ema_model.copy_to(ema_state)  # Copy EMA weights into it
+            torch.save(ema_state, f"{save_path}_ema.pth")
+    
+    def load_pretrained(self, load_path, load_ema=False):
+        """Load model weights, optionally from EMA checkpoint"""
+        if load_ema and self.ema_model is not None:
+            state_dict = torch.load(f"{load_path}_ema.pth")
+        else:
+            state_dict = torch.load(f"{load_path}_main.pth")
+        self.model.load_state_dict(state_dict)
