@@ -4,7 +4,7 @@ import sys
 import json
 import requests
 from tqdm import tqdm
-from ..data.processing.data_retrieval import (
+from blockgen.data.processing.data_retrieval import (
     load_annotations, load_objects, _load_object_paths,
     BASE_PATH
 )

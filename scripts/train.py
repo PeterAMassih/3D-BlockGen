@@ -1,12 +1,12 @@
 import torch
 from pathlib import Path
 
-from ..configs.voxel_config  import VoxelConfig
+from blockgen.configs.voxel_config  import VoxelConfig
 
-from ..configs.diffusion_config import DiffusionConfig
+from blockgen.configs.diffusion_config import DiffusionConfig
 
-from ..utils.dataloaders import create_dataloaders
-from ..utils.model_factory import create_model_and_trainer
+from blockgen.utils.dataloaders import create_dataloaders
+from blockgen.utils.model_factory import create_model_and_trainer
 
 
 def main():

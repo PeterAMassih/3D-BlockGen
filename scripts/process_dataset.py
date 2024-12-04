@@ -2,7 +2,7 @@
 from pathlib import Path
 import json
 import traceback
-from data.processing.data_voxelization import VoxelizerWithAugmentation
+from blockgen.data.processing.data_voxelization import VoxelizerWithAugmentation
 import tqdm
 import gc
 import torch
