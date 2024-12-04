@@ -1,7 +1,6 @@
 import torch
 from pathlib import Path
 
-# Import your classes here (assuming they're in a separate file)
 from ..configs.voxel_config  import VoxelConfig
 
 from ..configs.diffusion_config import DiffusionConfig
