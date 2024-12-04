@@ -1,8 +1,5 @@
-import torch
 import torch.nn as nn
 from diffusers import DDPMScheduler, EMAModel
-import numpy as np
-import random
 from ..configs.diffusion_config import DiffusionConfig
 
 class DiffusionModel3D(nn.Module):
@@ -66,7 +63,10 @@ class DiffusionModel3D(nn.Module):
     def load_pretrained(self, save_path, load_ema=False):
         """Load model weights, optionally from EMA checkpoint."""
         if load_ema and self.ema_model is not None:
+            # Keep EMA loading as is since it works
             self.ema_model = EMAModel.from_pretrained(f"{save_path}_ema", model_cls=type(self.model))
             self.ema_model.copy_to(self.model.parameters())
         else:
-            self.model.from_pretrained(f"{save_path}_main")
+            # Load main model following diffusers convention
+            main_path = f"{save_path}_main"
+            self.model = self.model.from_pretrained(main_path)
