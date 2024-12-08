@@ -40,9 +40,9 @@ if __name__ == "__main__":
     # Select 200k models sequentially
     uids = []
     target_count = 200000
-    current_folder_num = 0  # This will go from 0 to 999
+    current_folder_num = 0  # This will go from 0 to 159 (inclusive)
     
-    while len(uids) < target_count and current_folder_num < 1000:
+    while len(uids) < target_count and current_folder_num < len(folder_counts):
         # Create folder path like "glbs/000-000" TODO change if needed if new glbs are added for now hardcoded
         folder = f"glbs/000-{str(current_folder_num).zfill(3)}"
         
