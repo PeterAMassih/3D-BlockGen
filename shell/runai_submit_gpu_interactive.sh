@@ -1,4 +1,4 @@
-arg_job_name="pabdel-cpu"
+arg_job_name="pabdel-gpu-int"
 
 CLUSTER_USER="pabdel" # Your epfl username.
 CLUSTER_USER_ID="226664"  # Your epfl UID.
