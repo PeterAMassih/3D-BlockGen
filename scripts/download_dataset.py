@@ -37,19 +37,24 @@ if __name__ == "__main__":
     for folder, count in sorted(folder_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
         print(f"  {folder}: {count} models")
     
-    # Select 200k models
+    # Select 200k models sequentially
     uids = []
     target_count = 200000
-    current_num = 0
+    current_folder_num = 0  # This will go from 0 to 999
     
-    while len(uids) < target_count and current_num < len(folder_counts):  # Up to 000-159
-        folder = f"glbs/000-{str(current_num).zfill(3)}"
+    while len(uids) < target_count and current_folder_num < 1000:
+        # Create folder path like "glbs/000-000" TODO change if needed if new glbs are added for now hardcoded
+        folder = f"glbs/000-{str(current_folder_num).zfill(3)}"
+        
+        # Get UIDs from this folder
         folder_uids = [k for k, v in object_paths.items() if v.startswith(folder)]
-        uids.extend(folder_uids)
-        if folder_uids:  # Only print if we found UIDs in this folder
+        
+        if folder_uids:  # Only add and print if we found UIDs in this folder
+            uids.extend(folder_uids)
             print(f"Added {len(folder_uids)} UIDs from folder {folder}")
             print(f"Total UIDs so far: {len(uids)}")
-        current_num += 1
+        
+        current_folder_num += 1  # Move to next folder number
     
     # Trim to exactly 200k if we went over
     uids = uids[:target_count]
