@@ -17,32 +17,28 @@ def load_processing_log(log_file):
         try:
             with open(log_file, 'r') as f:
                 log_data = json.load(f)
-                # Ensure all required keys exist
-                log_data.setdefault("processed", [])
-                log_data.setdefault("permanent_failures", [])
-                return log_data, set(log_data["processed"]), set(log_data["permanent_failures"])
+                return set(log_data.get("processed", [])), set(log_data.get("permanent_failures", []))
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"Error loading log file: {e}. Starting fresh.")
-    
-    return {"processed": [], "permanent_failures": []}, set(), set()
+    return set(), set()
 
 def process_dataset(input_dir: str, output_dir: str, resolution: int = 32):
-    """Process the dataset sequentially."""
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
+    """Process the dataset sequentially with optimized memory usage."""
+    input_dir = Path(input_dir).resolve()
+    output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load or create processing log
+    # Load processed files tracking
     log_file = output_dir / "processing_log.json"
-    log_data, processed_set, permanent_failures_set = load_processing_log(log_file)
+    processed_files, failed_files = load_processing_log(log_file)
     
-    # Collect files to process
-    glb_files = list(input_dir.rglob("*.glb"))
-    files_to_process = [f for f in glb_files if str(f) not in processed_set and str(f) not in permanent_failures_set]
+    # Find all GLB files efficiently
+    all_files = {str(f) for f in Path(input_dir).rglob("*.glb")}
+    files_to_process = all_files - processed_files - failed_files
     
-    logger.info(f"Total files found: {len(glb_files)}")
-    logger.info(f"Already processed: {len(processed_set)}")
-    logger.info(f"Permanent failures: {len(permanent_failures_set)}")
+    logger.info(f"Total files found: {len(all_files)}")
+    logger.info(f"Already processed: {len(processed_files)}")
+    logger.info(f"Permanent failures: {len(failed_files)}")
     logger.info(f"Files to process: {len(files_to_process)}")
     
     if not files_to_process:
@@ -52,65 +48,69 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32):
     # Create single voxelizer instance
     voxelizer = VoxelizerWithAugmentation(resolution=resolution)
     
-    # Process files sequentially with progress tracking
+    # Process files sequentially
     processed_count = 0
     failed_count = 0
     
     try:
-        for glb_file in tqdm(files_to_process, desc="Processing files"):
+        for file_path in tqdm(sorted(files_to_process), desc="Processing files"):
             results = None
             try:
                 # Process mesh
-                results = voxelizer.process_mesh(str(glb_file))
+                results = voxelizer.process_mesh(file_path)
                 
                 if not results:
-                    permanent_failures_set.add(str(glb_file))
-                    log_data["permanent_failures"].append(str(glb_file))
+                    failed_files.add(file_path)
                     failed_count += 1
-                    logger.error(f"Failed to process {glb_file}: No results generated")
+                    logger.error(f"Failed to process {file_path}: No results generated")
                     continue
                 
-                # Save with directory structure
-                relative_path = Path(glb_file).relative_to(input_dir)
+                # Save tensors
+                relative_path = Path(file_path).relative_to(input_dir)
                 save_dir = output_dir / relative_path.parent
                 save_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Save all tensors
                 for i, tensor in enumerate(results):
                     suffix = "" if i == 0 else f"_aug{i}"
                     save_path = save_dir / f"{relative_path.stem}{suffix}.pt"
                     torch.save(tensor, save_path)
                 
-                # Mark as processed
-                processed_set.add(str(glb_file))
-                log_data["processed"].append(str(glb_file))
+                processed_files.add(file_path)
                 processed_count += 1
                 
             except Exception as e:
-                permanent_failures_set.add(str(glb_file))
-                log_data["permanent_failures"].append(str(glb_file))
+                failed_files.add(file_path)
                 failed_count += 1
-                logger.error(f"Failed to process {glb_file}: {str(e)}")
+                logger.error(f"Failed to process {file_path}: {str(e)}")
             
             finally:
-                # Clean up memory after each file
+                # Clean up memory
                 if results is not None:
                     del results
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             
-            # Save log periodically (every 20 files)
+            # Save progress periodically
             if (processed_count + failed_count) % 20 == 0:
+                current_log = {
+                    "processed": list(processed_files),
+                    "permanent_failures": list(failed_files)
+                }
                 with open(log_file, 'w') as f:
-                    json.dump(log_data, f, indent=2)
-                    
+                    json.dump(current_log, f, indent=2)
+    
     except KeyboardInterrupt:
         logger.info("\nProcessing interrupted by user")
+    
     finally:
         # Save final log
+        final_log = {
+            "processed": list(processed_files),
+            "permanent_failures": list(failed_files)
+        }
         with open(log_file, 'w') as f:
-            json.dump(log_data, f, indent=2)
+            json.dump(final_log, f, indent=2)
         
         logger.info("\nProcessing Summary:")
         logger.info(f"Successfully processed: {processed_count}")
