@@ -1,4 +1,5 @@
 import torch
+import wandb
 from transformers import CLIPTextModel
 from tqdm import tqdm
 import json
@@ -8,7 +9,7 @@ from ..configs.voxel_config import VoxelConfig
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 class DiffusionTrainer:
-    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4):
+    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4, wandb_key=None, project_name="3D-BlockGen"):
         self.model = model
         self.model.to(device) # DO NOT FORGET
         self.config = config
@@ -17,6 +18,13 @@ class DiffusionTrainer:
         self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
         self.text_encoder.eval()
         self.loss_fn = config.get_loss_fn(device)
+        
+        # Add wandb support
+        self.wandb_key = wandb_key
+        self.project_name = project_name
+        self.wandb_run = None
+        if self.wandb_key:
+            wandb.login(key=self.wandb_key)
     
     def evaluate(self, dataloader):
         self.model.eval()
@@ -62,13 +70,18 @@ class DiffusionTrainer:
                         diffusion_model=self.model
                     )
                 else:
-                    loss = self.loss_fn(pred_original, voxels) # Because shape is [B, 1, H, W, D] maybe need to squeeze(1) to check
+                    loss = self.loss_fn(pred_original, voxels) # Because shape is [B, 1, H, W, D] maybe need to squeeze(1) to check 
                 
                 total_loss += loss.item()
                 num_batches += 1
         
         avg_loss = total_loss / num_batches
         print(f"Test Loss: {avg_loss:.4f}")
+        
+        # Log to wandb if enabled
+        if self.wandb_run:
+            self.wandb_run.log({'test_loss': avg_loss})
+            
         return avg_loss
     
     def train_step(self, batch, optimizer, current_step):
@@ -120,6 +133,14 @@ class DiffusionTrainer:
         
         # Update EMA model if enabled
         self.model.update_ema(current_step)
+        
+        # Log to wandb if enabled
+        if self.wandb_run:
+            self.wandb_run.log({
+                'train_loss': loss.item(),
+                'learning_rate': optimizer.param_groups[0]['lr'],
+                'step': current_step
+            })
         
         return loss.item()
         
@@ -189,11 +210,22 @@ class DiffusionTrainer:
             'device': str(self.device),
             'start_time': time.strftime("%Y%m%d-%H%M%S"),
             'resume_checkpoint': checkpoint_path,
-            'starting_step': starting_step
+            'starting_step': starting_step,
+            'use_rgb': self.config.use_rgb,
+            'model_params': sum(p.numel() for p in self.model.parameters()),
+            'batch_size': train_dataloader.batch_size
         }
         
+        # Save config locally and initialize wandb if enabled
         with open(save_dir / "training_config.json", 'w') as f:
             json.dump(training_config, f, indent=2)
+            
+        if self.wandb_key and not self.wandb_run:
+            self.wandb_run = wandb.init(
+                project=self.project_name,
+                config=training_config,
+                resume=True if checkpoint_path else False
+            )
         
         train_iter = iter(train_dataloader)
         
@@ -226,12 +258,12 @@ class DiffusionTrainer:
                     'lr': f"{current_lr:.6f}"
                 })
                 
-                # Evaluation TODO bug here with the best_loss
+                # Evaluation TODO bug here with the best_loss - Not important
                 if current_step % eval_every == 0:
                     test_loss = self.evaluate(test_dataloader)
                     test_losses.append(test_loss)
                     
-                    # Save metrics
+                    # Save metrics locally
                     metrics = {
                         'training_losses': losses,
                         'test_losses': test_losses,
@@ -248,6 +280,9 @@ class DiffusionTrainer:
                     if test_loss < best_test_loss:
                         best_test_loss = test_loss
                         self.model.save_pretrained(str(best_model_dir / f"best_model"))
+                        if self.wandb_run:
+                            self.wandb_run.summary['best_test_loss'] = best_test_loss
+                            self.wandb_run.summary['best_model_step'] = current_step
                         print(f"\nNew best model saved with Test Loss: {test_loss:.4f}")
                 
                 # Regular checkpoints
@@ -267,7 +302,14 @@ class DiffusionTrainer:
                         'lr_history': lr_history
                     }
                     
-                    torch.save(checkpoint_data, checkpoints_dir / f"checkpoint_step_{current_step}.pth")
+                    checkpoint_path = checkpoints_dir / f"checkpoint_step_{current_step}.pth"
+                    torch.save(checkpoint_data, checkpoint_path)
+                    
+                    # Log checkpoint to wandb
+                    if self.wandb_run:
+                        artifact = wandb.Artifact(f'checkpoint-{current_step}', type='model')
+                        artifact.add_file(str(checkpoint_path))
+                        self.wandb_run.log_artifact(artifact)
                     
                     # Keep only last 5 checkpoints
                     checkpoint_files = sorted(checkpoints_dir.glob("checkpoint_step_*.pth"))
@@ -288,5 +330,19 @@ class DiffusionTrainer:
         
         with open(save_dir / "final_metrics.json", 'w') as f:
             json.dump(metrics, f)
+            
+        if self.wandb_run:
+            # Log final metrics
+            self.wandb_run.summary.update({
+                'final_test_loss': test_losses[-1] if test_losses else None,
+                'final_train_loss': losses[-1] if losses else None,
+                'best_test_loss_overall': best_test_loss,
+                'total_training_time': time.time() - time.mktime(time.strptime(training_config['start_time'], "%Y%m%d-%H%M%S"))
+            })
+            # Log final model
+            final_artifact = wandb.Artifact('final_model', type='model')
+            final_artifact.add_dir(str(models_dir / "final_model"))
+            self.wandb_run.log_artifact(final_artifact)
+            self.wandb_run.finish()
         
         return metrics

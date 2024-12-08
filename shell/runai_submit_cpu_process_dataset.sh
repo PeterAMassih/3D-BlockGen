@@ -1,4 +1,4 @@
-arg_job_name="pabdel-gpu"
+arg_job_name="pabdel-cpu"
 
 CLUSTER_USER="pabdel" # Your epfl username.
 CLUSTER_USER_ID="226664"  # Your epfl UID.
@@ -9,17 +9,17 @@ CLUSTER_GROUP_ID="11227"  # Your epfl GID
 #MY_IMAGE="ic-registry.epfl.ch/ivrl/ubuntu20-base" 
 #MY_IMAGE="ic-registry.epfl.ch/ivrl/pytorch1.10:cuda11.3"
 #MY_IMAGE="ic-registry.epfl.ch/ivrl/datascience-python"
-MY_IMAGE="ic-registry.epfl.ch/ivrl/pajouheshgar/pytorch2.01:cuda11.7v2"
+MY_IMAGE="peteram/blockgen:cuda11.7v2"
 
 echo "Job [$arg_job_name]"
 
 runai submit $arg_job_name \
   -i $MY_IMAGE \
   -p ivrl-pabdel \
-  --cpu 10 --cpu-limit 14 \
-  --memory 50G --memory-limit 100G \
-  --gpu 1 \
-  --node-pools g10 \
+  --cpu 14 --cpu-limit 14 \
+  --memory 100G --memory-limit 100G \
+  --gpu 0 \
+  --node-pools g9 \
   --allow-privilege-escalation \
   --pvc runai-ivrl-pabdel-scratch:/scratch \
   --large-shm \
@@ -28,7 +28,7 @@ runai submit $arg_job_name \
   -e CLUSTER_USER_ID=$CLUSTER_USER_ID \
   -e CLUSTER_GROUP_NAME=$CLUSTER_GROUP_NAME \
   -e CLUSTER_GROUP_ID=$CLUSTER_GROUP_ID \
-  --command -- /bin/bash -c "\". /opt/lab/setup.sh && cd /scratch/students/2024-fall-sp-pabdel/3D-BlockGen && su $CLUSTER_USER -c 'sh train.sh' \""
+  --command -- /bin/bash -c "\". /opt/lab/setup.sh && cd /scratch/students/2024-fall-sp-pabdel/3D-BlockGen && su $CLUSTER_USER -c 'pip install -e .' && su $CLUSTER_USER -c 'python scripts/process_dataset.py' \""
 
 sleep 5 
 

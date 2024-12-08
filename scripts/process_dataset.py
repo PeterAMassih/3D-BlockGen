@@ -148,15 +148,15 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, num_p
         logger.info(f"Failed: {failed_count}")
 
 if __name__ == "__main__":
-    input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data"
-    output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data_voxelized"
+    input_dir = "objaverse_data"
+    output_dir = "objaverse_data_voxelized"
     
     try:
         process_dataset(
             input_dir=input_dir,
             output_dir=output_dir,
             resolution=32,
-            num_processes=14  # Adjust based on your system
+            num_processes=12  # Adjust based on your system
         )
     except Exception as e:
         logger.error(f"Fatal error during processing: {str(e)}")

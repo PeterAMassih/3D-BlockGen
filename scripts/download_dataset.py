@@ -39,7 +39,7 @@ if __name__ == "__main__":
     
     # Select 200k models sequentially
     uids = []
-    target_count = 200000
+    target_count = 200_000
     current_folder_num = 0  # This will go from 0 to 159 (inclusive)
     
     while len(uids) < target_count and current_folder_num < len(folder_counts):

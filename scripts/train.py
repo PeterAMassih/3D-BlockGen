@@ -1,18 +1,29 @@
 import torch
+import argparse
 from pathlib import Path
 
-from blockgen.configs.voxel_config  import VoxelConfig
-
+from blockgen.configs.voxel_config import VoxelConfig
 from blockgen.configs.diffusion_config import DiffusionConfig
-
 from blockgen.utils.dataloaders import create_dataloaders
 from blockgen.utils.model_factory import create_model_and_trainer
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train 3D-BlockGen model')
+    parser.add_argument('--wandb_key', type=str, help='Weights & Biases API key')
+    parser.add_argument('--project_name', type=str, default="3D-Blockgen", help='W&B project name')
+    parser.add_argument('--data_dir', type=str, default='objaverse_data_voxelized', help='Directory containing voxel data')
+    parser.add_argument('--annotation_file', type=str, default='objaverse_data/annotations.json', 
+                       help='Path to annotations file')
+    parser.add_argument('--save_dir', type=str, default='runs/experiment_color', help='Directory to save outputs')
+    parser.add_argument('--checkpoint_path', type=str, default=None, help='Path to checkpoint for resuming training')
+    return parser.parse_args()
 
 def main():
+    args = parse_args()
+    
     # Set up configs
     voxel_config = VoxelConfig(
-        use_rgb=False,  # Set to True if using RGBA data
+        use_rgb=True,  # Set to True if using RGBA data
         default_color=[0.5, 0.5, 0.5],
         alpha_weight=1.0,
         rgb_weight=1.0
@@ -37,11 +48,12 @@ def main():
         ema_device=train_params['device'],
         seed=42  # Set seed for reproducibility
     )
+    
     # Paths
-    data_dir = Path('ayre')
-    annotation_file = Path('objaverse_data/annotations.json')
-    save_dir = Path('runs/experiment_5')
-    checkpoint_path = None  # Set to path if resuming training
+    data_dir = Path(args.data_dir)
+    annotation_file = Path(args.annotation_file)
+    save_dir = Path(args.save_dir)
+    checkpoint_path = args.checkpoint_path
     
     # Create dataloaders
     train_loader, test_loader = create_dataloaders(
@@ -53,13 +65,14 @@ def main():
         test_split=train_params['test_split']
     )
     
-    # Create model and trainer
-    # Create model and trainer with both configs
+    # Create model and trainer with wandb config
     trainer, diffusion_model = create_model_and_trainer(
         voxel_config=voxel_config,
         diffusion_config=diffusion_config,
         resolution=32,
-        device=train_params['device']
+        device=train_params['device'],
+        wandb_key=args.wandb_key,
+        project_name=args.project_name
     )
     
     # Start training
