@@ -16,15 +16,43 @@ if __name__ == "__main__":
     # Load object paths
     print("Loading object paths...")
     object_paths = _load_object_paths()
+
+    # Count total UIDs across all folders
+    folder_counts = {}
+    total_uids = 0
     
-    # Select first 50k models
+    for uid, path in object_paths.items():
+        if path.startswith('glbs/'):
+            folder = path.split('/')[1][:7]  # Get XXX-YYY part
+            folder_counts[folder] = folder_counts.get(folder, 0) + 1
+            total_uids += 1
+    
+    print(f"\nTotal UIDs in dataset: {total_uids}")
+    print(f"Number of folders with models: {len(folder_counts)}")
+    
+    # Print some statistics
+    print("\nFolder statistics:")
+    print(f"- Average models per folder: {total_uids/len(folder_counts):.1f}")
+    print(f"- Folders with most models:")
+    for folder, count in sorted(folder_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+        print(f"  {folder}: {count} models")
+    
+    # Select 200k models
     uids = []
-    for i in range(10):
-        folder = f"glbs/000-{str(i).zfill(3)}"
+    target_count = 200000
+    current_num = 0
+    
+    while len(uids) < target_count and current_num < len(folder_counts):  # Up to 000-159
+        folder = f"glbs/000-{str(current_num).zfill(3)}"
         folder_uids = [k for k, v in object_paths.items() if v.startswith(folder)]
         uids.extend(folder_uids)
-        print(f"Added {len(folder_uids)} UIDs from folder {folder}")
+        if folder_uids:  # Only print if we found UIDs in this folder
+            print(f"Added {len(folder_uids)} UIDs from folder {folder}")
+            print(f"Total UIDs so far: {len(uids)}")
+        current_num += 1
     
+    # Trim to exactly 200k if we went over
+    uids = uids[:target_count]
     print(f"\nTotal UIDs selected: {len(uids)}")
     
     # Estimate size

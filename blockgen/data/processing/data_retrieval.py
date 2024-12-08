@@ -87,11 +87,11 @@ def _download_object(args: Tuple) -> Tuple[str, Optional[str]]:
         
         # Try download with retries
         if _download_with_retry(hf_url, tmp_local_path):
-            os.rename(tmp_local_path, local_path)
+            os.rename(tmp_local_path, local_path) # This is atomic like this we do write corrupted files
             return uid, local_path
         else:
             if os.path.exists(tmp_local_path):
-                os.remove(tmp_local_path)
+                os.remove(tmp_local_path) # remove if not downloaded correctly
             return uid, None
             
     except Exception as e:
