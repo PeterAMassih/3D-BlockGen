@@ -29,7 +29,7 @@ def process_single_file(args):
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            return str(Path(glb_file).resolve()), True, None
+            return str(glb_file), False, "No results generated"
         
         # Save with directory structure
         relative_path = Path(glb_file).relative_to(input_dir)
@@ -62,7 +62,7 @@ def process_single_file(args):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return str(Path(glb_file).resolve()), False, str(e)
+        return str(glb_file), False, str(e)
 
 def load_processing_log(log_file):
     """Load or initialize the processing log with error handling."""
@@ -81,8 +81,8 @@ def load_processing_log(log_file):
 
 def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, num_processes: int = None):
     """Process the dataset with optimized multiprocessing."""
-    input_dir = Path(input_dir).resolve()  # Make absolute
-    output_dir = Path(output_dir).resolve()  # Make absolute
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Load or create processing log
@@ -91,7 +91,7 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, num_p
     
     # Collect files to process
     glb_files = list(input_dir.rglob("*.glb"))
-    files_to_process = [f.resolve() for f in glb_files if str(f.resolve()) not in processed_set and str(f.resolve()) not in permanent_failures_set]
+    files_to_process = [f for f in glb_files if str(f) not in processed_set and str(f) not in permanent_failures_set]
     
     logger.info(f"Total files found: {len(glb_files)}")
     logger.info(f"Already processed: {len(processed_set)}")
@@ -148,8 +148,8 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, num_p
         logger.info(f"Failed: {failed_count}")
 
 if __name__ == "__main__":
-    input_dir = "objaverse_data"
-    output_dir = "objaverse_data_voxelized"
+    input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data"
+    output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data_voxelized"
     
     try:
         process_dataset(
