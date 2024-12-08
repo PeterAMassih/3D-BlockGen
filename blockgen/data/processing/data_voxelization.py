@@ -32,6 +32,9 @@ def voxelize_with_color(mesh: trimesh.Trimesh,
     try:
         if hasattr(mesh.visual.to_color(), 'vertex_colors'):
             colors = mesh.visual.to_color().vertex_colors
+            # Add debug info
+            # print(f"Vertex count: {len(mesh.vertices)}")
+            # print(f"Color array shape: {colors.shape if colors is not None else None}")
             if not isinstance(colors, np.ndarray) or len(colors.shape) != 2:
                 colors = None
         elif hasattr(mesh.visual.material, 'main_color'):
@@ -45,7 +48,7 @@ def voxelize_with_color(mesh: trimesh.Trimesh,
             colors = None
             
     except Exception as e:
-        logging.info(f"No color information available: {str(e)}")
+        # logging.info(f"No color information available: {str(e)}")
         colors = None
 
     # Process colors if they exist and are valid
@@ -111,14 +114,36 @@ class VoxelizerWithAugmentation:
         self.resolution = resolution
     
     def _load_and_normalize_mesh(self, mesh_path: str) -> Optional[trimesh.Trimesh]:
-        mesh = trimesh.load(mesh_path)
-        
-        if isinstance(mesh, trimesh.Scene):
+        mesh = trimesh.load(mesh_path, force='mesh', process=False)
+    
+        # Handle case where mesh is a list
+        if isinstance(mesh, list):
+            meshes = [m for m in mesh if isinstance(m, trimesh.Trimesh)]
+            if not meshes:
+                return None
+            if len(meshes) > 1:
+                mesh = trimesh.util.concatenate(meshes)
+            else:
+                mesh = meshes[0]
+        # Handle case where mesh is a scene
+        elif isinstance(mesh, trimesh.Scene):
+            meshes = []
             for g in mesh.geometry.values():
                 if isinstance(g, trimesh.Trimesh):
-                    mesh = g
-                    break
-
+                    meshes.append(g)
+            
+            if not meshes:
+                return None
+                
+            if len(meshes) > 1:
+                mesh = trimesh.util.concatenate(meshes)
+            else:
+                mesh = meshes[0]
+    
+        # Verify we have a valid mesh
+        if not isinstance(mesh, trimesh.Trimesh):
+            return None
+    
         try:
             mesh.fill_holes()
         except Exception as e:
