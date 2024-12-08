@@ -28,7 +28,7 @@ runai submit $arg_job_name \
   -e CLUSTER_USER_ID=$CLUSTER_USER_ID \
   -e CLUSTER_GROUP_NAME=$CLUSTER_GROUP_NAME \
   -e CLUSTER_GROUP_ID=$CLUSTER_GROUP_ID \
-  --command -- /bin/bash -c "\". /opt/lab/setup.sh && cd /scratch/students/2024-fall-sp-pabdel/3D-BlockGen && su $CLUSTER_USER -c 'pip install -e .' && su $CLUSTER_USER -c 'sh train.sh' \""
+  --command -- /bin/bash -c "\". /opt/lab/setup.sh && cd /scratch/students/2024-fall-sp-pabdel/3D-BlockGen && su $CLUSTER_USER -c 'pip install -r requirements.txt' && su $CLUSTER_USER -c 'pip install -e .' && su $CLUSTER_USER -c 'sh train.sh' \""
 
 sleep 5 
 
