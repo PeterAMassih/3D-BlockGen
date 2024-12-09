@@ -74,36 +74,48 @@ class DiffusionInference3D:
                 
             return sample  
 
-    def sample_ddim(self, prompt, num_samples=8, image_size=(32, 32, 32), num_inference_steps=50, show_intermediate=False):
-        num_channels = 4 if self.config.use_rgb else 1
-        sample = torch.randn(num_samples, num_channels, *image_size).to(self.device)
-        
-        # Encode prompt
-        encoder_hidden_states = self.encode_prompt(prompt)
-        
-        self.noise_scheduler.set_timesteps(num_inference_steps, device=self.device)
-        timesteps = self.noise_scheduler.timesteps
+    def sample_ddim(self, prompt, num_samples=8, image_size=(32, 32, 32), num_inference_steps=50, show_intermediate=False, guidance_scale=7.0):
+        with torch.no_grad():
+            do_class_guidance = guidance_scale > 1.0
+            
+            num_channels = 4 if self.config.use_rgb else 1
+            sample = torch.randn(num_samples, num_channels, *image_size).to(self.device)
+            
+            encoder_hidden_states = self.encode_prompt([prompt] * num_samples)
+            if do_class_guidance:
+                encoder_hidden_states_uncond = self.encode_prompt([""] * num_samples)
+            
+            self.noise_scheduler.set_timesteps(num_inference_steps, device=self.device)
+            timesteps = self.noise_scheduler.timesteps
 
-        for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps)):
-            with torch.no_grad():
+            for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps)):
                 residual = self.model(
                     sample, 
                     t,
                     encoder_hidden_states=encoder_hidden_states
                 ).sample
 
-            alpha_prod_t = self.noise_scheduler.alphas_cumprod[t]
-            beta_prod_t = 1 - alpha_prod_t
-            pred_original_sample = (sample - beta_prod_t**0.5 * residual) / (alpha_prod_t ** 0.5)
-            
-            if show_intermediate:
-                print(f"timestep: {t}")
-                self.visualize_samples(sample, threshold=0.5)
-                self.visualize_samples(pred_original_sample, threshold=0.5)
+                if do_class_guidance:
+                    residual_uncond = self.model(
+                        sample, 
+                        t,
+                        encoder_hidden_states=encoder_hidden_states_uncond
+                    ).sample
+                    
+                    residual = residual_uncond + guidance_scale * (residual - residual_uncond)
 
-            sample = self.noise_scheduler.step(residual, t, sample).prev_sample
+                alpha_prod_t = self.noise_scheduler.alphas_cumprod[t]
+                beta_prod_t = 1 - alpha_prod_t
+                pred_original_sample = (sample - beta_prod_t**0.5 * residual) / (alpha_prod_t ** 0.5)
+                
+                if show_intermediate:
+                    print(f"timestep: {t}")
+                    self.visualize_samples(sample, threshold=0.5)
+                    self.visualize_samples(pred_original_sample, threshold=0.5)
 
-        return sample
+                sample = self.noise_scheduler.step(residual, t, sample).prev_sample
+
+            return sample
 
     def visualize_samples(self, samples, threshold=0.5):
         samples_ = samples.cpu().numpy()

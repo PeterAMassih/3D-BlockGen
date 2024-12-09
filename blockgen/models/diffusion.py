@@ -1,13 +1,21 @@
 import torch.nn as nn
-from diffusers import DDPMScheduler, EMAModel
+from diffusers import DDPMScheduler, EMAModel, DDIMScheduler
 from ..configs.diffusion_config import DiffusionConfig
 
 class DiffusionModel3D(nn.Module):
-    def __init__(self, model, config: DiffusionConfig):
+    def __init__(self, model, config: DiffusionConfig, use_ddim=False):
         super().__init__()
         self.model = model
         self.config = config
-        self.noise_scheduler = DDPMScheduler(num_train_timesteps=config.num_timesteps)
+        if use_ddim:
+            self.noise_scheduler = DDIMScheduler(
+                num_train_timesteps=config.num_timesteps,
+                beta_schedule="linear" 
+            )
+        else:
+            self.noise_scheduler = DDPMScheduler(
+                num_train_timesteps=config.num_timesteps
+            )
 
         # Initialize EMA if configured
         self.ema_model = None
