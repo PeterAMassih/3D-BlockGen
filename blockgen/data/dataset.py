@@ -38,13 +38,13 @@ class VoxelTextDataset(Dataset):
                 # Already in RGBA format
                 alpha = (voxel_data[3:4] > 0).float()
                 rgb = voxel_data[:3]
-                return torch.cat([alpha, rgb], dim=0)
+                return torch.cat([rgb, alpha], dim=0)
             else:
                 # Convert occupancy to RGBA
                 alpha = (voxel_data > 0).float()  # [1, H, W, D]
                 rgb = self.config.default_color.view(3, 1, 1, 1).to(voxel_data.device)
                 rgb = rgb.repeat(1, *voxel_data.shape[1:])  # [3, H, W, D]
-                return torch.cat([alpha, rgb], dim=0)  # [4, H, W, D]
+                return torch.cat([rgb, alpha], dim=0)  # [4, H, W, D]
         else:
             if voxel_data.shape[0] > 1:
                 voxel_data = voxel_data[-1:] # take the last one which is occupancy TODO IF RGBAO change

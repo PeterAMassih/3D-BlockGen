@@ -156,7 +156,7 @@ if __name__ == "__main__":
             input_dir=input_dir,
             output_dir=output_dir,
             resolution=32,
-            num_processes=6  # Adjust based on your system
+            num_processes=10  # Adjust based on your system
         )
     except Exception as e:
         logger.error(f"Fatal error during processing: {str(e)}")

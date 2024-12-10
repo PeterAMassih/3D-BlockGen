@@ -2,6 +2,7 @@ import torch.nn as nn
 from diffusers import DDPMScheduler, EMAModel, DDIMScheduler
 from ..configs.diffusion_config import DiffusionConfig
 
+# TODO FOR COMPLETNESS OVERRIDE THE .to() method of nn.Module to like this we load also in here to the device !
 class DiffusionModel3D(nn.Module):
     def __init__(self, model, config: DiffusionConfig, use_ddim=False):
         super().__init__()

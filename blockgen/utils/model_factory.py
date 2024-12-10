@@ -40,6 +40,7 @@ def create_model_and_trainer(
         model, 
         config=diffusion_config
     )
+    diffusion_model = diffusion_model.to(device)
     
     trainer = DiffusionTrainer(
         diffusion_model, 

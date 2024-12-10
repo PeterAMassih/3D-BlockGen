@@ -182,8 +182,13 @@ class DiffusionTrainer:
             print(f"Resuming training from checkpoint: {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path)
             
-            # Load model states
-            self.model.load_pretrained(checkpoint_path)
+            # Get the models directory path from checkpoint path
+            checkpoint_dir = Path(checkpoint_path).parent.parent
+            model_step = f"model_step_{checkpoint['step']}"
+            model_path = checkpoint_dir / 'models' / model_step
+            
+            # Load the model weights (load_pretrained will append _main/_ema)
+            self.model.load_pretrained(str(model_path))
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             
             current_step = checkpoint['step']
