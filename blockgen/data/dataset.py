@@ -14,22 +14,39 @@ class VoxelTextDataset(Dataset):
         self.voxel_dir = Path(voxel_dir)
         self.config = config
         
-        
         # Load annotations
         with open(annotation_file, 'r') as f:
             self.annotations = json.load(f)
         
-        # Get all files recursively
+        # Get files and verify paths
         self.files = []
+        seen_paths = set()  # To track duplicates
+        
         for pt_file in tqdm(self.voxel_dir.rglob("*.pt"), desc="Finding voxel files"):
             if "_aug" not in pt_file.name:
-                self.files.append(pt_file)
+                # Verify path is valid
+                if pt_file.exists():
+                    pt_path_str = str(pt_file)
+                    if pt_path_str not in seen_paths:
+                        self.files.append(pt_file)
+                        seen_paths.add(pt_path_str)
+                
+                # Check augmentations
                 for i in range(1, 4):
-                    aug_file = pt_file.with_name(f"{pt_file.stem}_aug{i}.pt")
+                    aug_file = pt_file.parent / f"{pt_file.stem}_aug{i}.pt"
                     if aug_file.exists():
-                        self.files.append(aug_file)
+                        aug_path_str = str(aug_file)
+                        if aug_path_str not in seen_paths:
+                            self.files.append(aug_file)
+                            seen_paths.add(aug_path_str)
         
-        print(f"\nFound {len(self.files)} files (including augmentations)")
+        print(f"\nFound {len(self.files)} unique files (including augmentations)")
+        
+        # Debug: Print a few paths properly formatted
+        print("\nSample paths:")
+        for path in self.files[:5]:
+            print(f"  {path}")
+
         
     def _process_voxel_data(self, voxel_data):
         """Process voxel data according to configuration"""
@@ -111,7 +128,13 @@ class VoxelTextDataset(Dataset):
         file_path = self.files[idx]
         model_id = file_path.stem.split('_aug')[0]
         
-        voxel_data = torch.load(file_path)
+        try:
+            voxel_data = torch.load(file_path)
+        except Exception as e:
+            print(f"Error loading file: {file_path}")
+            print(f"Error: {str(e)}")
+            raise
+        
         voxel_data = self._process_voxel_data(voxel_data)
         
         return {

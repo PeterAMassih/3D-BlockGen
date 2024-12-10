@@ -14,6 +14,7 @@ from pytorch3d.transforms import random_rotation
 from pytorch3d.renderer import look_at_view_transform
 import matplotlib.pyplot as plt
 from pytorch3d.renderer import PointLights
+from pytorch3d.io import save_ply
 
 class DiffusionInference3D:
     def __init__(self, model, noise_scheduler, config, device='cuda'):
@@ -54,9 +55,9 @@ class DiffusionInference3D:
                 encoder_hidden_states_uncond = self.encode_prompt([""] * num_samples)
     
             timesteps = self.noise_scheduler.timesteps.to(self.device)
-            print(timesteps)
+            # print(timesteps)
 
-            timesteps = timesteps[300:]
+            # timesteps = timesteps[300:]
 
             
             if use_mean_init:
@@ -88,9 +89,9 @@ class DiffusionInference3D:
                 alpha_prod_t = self.noise_scheduler.alphas_cumprod[t]
                 beta_prod_t = 1 - alpha_prod_t
                 pred_original_sample = (sample - beta_prod_t**0.5 * residual) / (alpha_prod_t ** 0.5)
-                print(t.item(), (alpha_prod_t**0.5).item(), (beta_prod_t**0.5).item())
+                # print(t.item(), (alpha_prod_t**0.5).item(), (beta_prod_t**0.5).item())
 
-                pred_original_sample = pred_original_sample.clamp(0, 1)
+                # pred_original_sample = pred_original_sample.clamp(0, 1)
     
                 if show_intermediate and t % 50 == 49:
                     print(f"timestep: {t}")
@@ -101,16 +102,16 @@ class DiffusionInference3D:
                         #self.visualize_samples_p3d(sample[0], threshold=0.5)
                         self.visualize_samples_p3d(pred_original_sample[0], threshold=0.25)
                 
-                prev_t = self.noise_scheduler.previous_timestep(t)
-                alpha_prod_t_prev = self.noise_scheduler.alphas_cumprod[prev_t] if prev_t >= 0 else self.noise_scheduler.one
-                beta_prod_t_prev = 1 - alpha_prod_t_prev
-                current_alpha_t = alpha_prod_t / alpha_prod_t_prev
-                current_beta_t = 1 - current_alpha_t
-                pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * current_beta_t) / beta_prod_t
-                current_sample_coeff = current_alpha_t ** (0.5) * beta_prod_t_prev / beta_prod_t
-                sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * sample
+                # prev_t = self.noise_scheduler.previous_timestep(t)
+                # alpha_prod_t_prev = self.noise_scheduler.alphas_cumprod[prev_t] if prev_t >= 0 else self.noise_scheduler.one
+                # beta_prod_t_prev = 1 - alpha_prod_t_prev
+                # current_alpha_t = alpha_prod_t / alpha_prod_t_prev
+                # current_beta_t = 1 - current_alpha_t
+                # pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * current_beta_t) / beta_prod_t
+                # current_sample_coeff = current_alpha_t ** (0.5) * beta_prod_t_prev / beta_prod_t
+                # sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * sample
                 
-                # sample = self.noise_scheduler.step(residual, t, sample).prev_sample
+                sample = self.noise_scheduler.step(residual, t, sample).prev_sample
                 
             return sample
 
@@ -159,117 +160,108 @@ class DiffusionInference3D:
 
     def visualize_samples(self, samples, threshold=None):
         """
-        Visualize generated samples with distribution analysis and adaptive thresholding.
-        
+        Visualize generated samples with both 2D slices and 3D rendering.
         Args:
             samples: Tensor of shape [B, C, H, W, D] where C is 1 (occupancy) or 4 (RGBA)
             threshold: Optional threshold value. If None, will be determined by distribution
         """
         samples_ = samples.cpu().numpy()
         fig, axs = plt.subplots(2, len(samples_), figsize=(4*len(samples_), 8))
-        try:
-            for i, sample in enumerate(samples_):
-                if self.config.use_rgb:
-                    # distribution
-                    hist, bins = np.histogram(sample[3], bins=10)
-                    print(f"\nSample {i} distribution:")
-                    print(f"Histogram bins: {bins}")
-                    print(f"Histogram counts: {hist}")
-                    print(f"Percentiles: 10%: {np.percentile(sample[3], 10):.3f}, "
-                          f"50%: {np.percentile(sample[3], 50):.3f}, "
-                          f"90%: {np.percentile(sample[3], 90):.3f}")
-                    
-                    # Use new threshold if none provided
-                    if threshold is None:
-                        adaptive_threshold = np.percentile(sample[3], 90)
-                        print(f"Using adaptive threshold: {adaptive_threshold:.3f}")
-                    else:
-                        adaptive_threshold = threshold
-                        
-                    print(f"RGB range: [{sample[:3].min():.3f}, {sample[:3].max():.3f}]")
-                    print(f"Alpha range: [{sample[3].min():.3f}, {sample[3].max():.3f}]")
-                    
-                    # Get binary occupancy from alpha channel
-                    binary_sample = (sample[3] > adaptive_threshold).astype(bool)
-                    print(f"Number of occupied voxels: {np.sum(binary_sample)} "
-                          f"({(np.sum(binary_sample)/binary_sample.size)*100:.2f}% of volume)")
-                    
-                    # Rest of the visualization code remains the same...
-                    colors = np.zeros((*binary_sample.shape, 4))
-                    occupied_coords = np.where(binary_sample)
-                    
-                    for x, y, z in zip(*occupied_coords):
-                        colors[x, y, z] = [
-                            np.clip(sample[0, x, y, z], 0, 1),
-                            np.clip(sample[1, x, y, z], 0, 1),
-                            np.clip(sample[2, x, y, z], 0, 1),
-                            1.0
-                        ]
-                    
-                    mid_slice_idx = sample.shape[3]//2
-                    rgb_slice = np.clip(
-                        np.moveaxis(sample[:3, :, :, mid_slice_idx], 0, -1),
-                        0, 1
-                    )
-                    alpha_slice = sample[3, :, :, mid_slice_idx] > adaptive_threshold
-                    slice_img = np.zeros((*rgb_slice.shape[:-1], 4))
-                    if np.any(alpha_slice):
-                        slice_img[alpha_slice] = np.concatenate([
-                            rgb_slice[alpha_slice],
-                            np.ones((np.sum(alpha_slice), 1))
-                        ], axis=1)
-                    
-                    axs[0, i].imshow(slice_img)
-                    
-                else:
-                    # Single channel visualization...
-                    binary_sample = (sample[0] > threshold).astype(bool)
-                    colors = None
-                    axs[0, i].imshow(binary_sample[:, :, sample.shape[3]//2], cmap="gray")
-                
-                axs[0, i].set_title(f"Center Slice (Occupied: {np.sum(binary_sample)})")
-                axs[0, i].axis("off")
         
+        for i, sample in enumerate(samples_):
+            if self.config.use_rgb:
+                # Print distributions and set threshold
+                if threshold is None:
+                    adaptive_threshold = np.percentile(sample[3], 90)
+                    print(f"Using adaptive threshold: {adaptive_threshold:.3f}")
+                else:
+                    adaptive_threshold = threshold
+                
+                print(f"RGB range: [{sample[:3].min():.3f}, {sample[:3].max():.3f}]")
+                print(f"Alpha range: [{sample[3].min():.3f}, {sample[3].max():.3f}]")
+                
+                # Get occupancy from alpha channel
+                occupancy = (sample[3] > adaptive_threshold).astype(bool)
+                # Ensure RGB is in [0,1] range
+                rgb = np.clip(sample[:3], 0, 1)
+                
+                print(f"Occupied voxels: {np.sum(occupancy)} ({(np.sum(occupancy)/occupancy.size)*100:.2f}% of volume)")
+                
+                # 2D slice visualization
+                mid_slice_idx = sample.shape[2]//2
+                # Create RGBA slice image
+                rgb_slice = rgb[:, :, mid_slice_idx]  # Shape: [3, H, W]
+                alpha_slice = occupancy[:, :, mid_slice_idx]  # Shape: [H, W]
+                
+                # Create empty RGBA image
+                slice_img = np.zeros((*rgb_slice.shape[1:], 4))  # Shape: [H, W, 4]
+                if np.any(alpha_slice):
+                    # For occupied voxels, set RGB and alpha
+                    rgb_occupied = np.moveaxis(rgb_slice[:, alpha_slice], 0, -1)  # Move channels to end
+                    slice_img[alpha_slice] = np.concatenate([rgb_occupied, np.ones((np.sum(alpha_slice), 1))], axis=1)
+                
+                # Show 2D slice
+                axs[0, i].imshow(slice_img)
+                axs[0, i].set_title(f"Center Slice")
+                axs[0, i].axis("off")
+                
+                # 3D visualization
                 ax = axs[1, i]
                 ax.remove()
                 ax = fig.add_subplot(2, len(samples_), len(samples_) + i + 1, projection='3d')
-    
-                # x, y, z = np.indices((33, 33, 33)) / 32.0
                 
-                if self.config.use_rgb and np.any(binary_sample):
-                    ax.voxels(binary_sample, facecolors=colors, edgecolor='k')
-                else:
-                    ax.voxels(binary_sample, edgecolor='k')
-                    
-                #ax.set_title(f"3D View (Occupied: {np.sum(binary_sample)})")
-                #ax.view_init(elev=30, azim=45)
+                # Create RGBA colors for voxels
+                colors = np.zeros((*occupancy.shape, 4))
+                if np.any(occupancy):
+                    # Set RGB values only for occupied voxels
+                    for c in range(3):
+                        colors[occupancy, c] = rgb[c, occupancy]
+                    # Set alpha to 1 for occupied voxels
+                    colors[occupancy, 3] = 1.0
                 
-                #ax.set_box_aspect([1, 1, 1])
-                #ax.set_xlim(0, binary_sample.shape[0])
-                #ax.set_ylim(0, binary_sample.shape[1])
-                #ax.set_zlim(0, binary_sample.shape[2])
+                ax.voxels(occupancy, facecolors=colors, edgecolor='k', alpha=0.8)
+                ax.view_init(elev=30, azim=45)
+                ax.set_title("3D View")
+                
+            else:
+                # Single channel visualization
+                binary_sample = (sample[0] > threshold).astype(bool)
+                axs[0, i].imshow(binary_sample[:, :, sample.shape[2]//2], cmap="gray")
+                axs[0, i].set_title(f"Center Slice")
+                axs[0, i].axis("off")
+                
+                ax = axs[1, i]
+                ax.remove()
+                ax = fig.add_subplot(2, len(samples_), len(samples_) + i + 1, projection='3d')
+                ax.voxels(binary_sample, edgecolor='k')
+                ax.view_init(elev=30, azim=45)
+                ax.set_title("3D View")
+            
+            # Set axis limits for 3D plot
+            ax.set_box_aspect([1, 1, 1])
+            ax.set_xlim(0, occupancy.shape[0])
+            ax.set_ylim(0, occupancy.shape[1])
+            ax.set_zlim(0, occupancy.shape[2])
         
-            plt.tight_layout()
-            plt.show()
-        except KeyboardInterrupt as e:
-            print(e)
-
+        plt.tight_layout()
+        plt.show()
+    
     def visualize_samples_p3d(self, sample, threshold=0.5):
         device = "cuda"
         # Voxel grid parameters
         voxel_grid = sample
         sample_ = sample.cpu().numpy()
 
-        hist, bins = np.histogram(sample_[3], bins=10)
-        print(f"\nSample {0} distribution:")
-        print(f"Histogram bins: {bins}")
-        print(f"Histogram counts: {hist}")
-        print(f"Percentiles: 10%: {np.percentile(sample_[3], 10):.3f}, "
-              f"50%: {np.percentile(sample_[3], 50):.3f}, "
-              f"90%: {np.percentile(sample_[3], 90):.3f}")
+        # hist, bins = np.histogram(sample_[3], bins=10)
+        # print(f"\nSample {0} distribution:")
+        # print(f"Histogram bins: {bins}")
+        # print(f"Histogram counts: {hist}")
+        # print(f"Percentiles: 10%: {np.percentile(sample_[3], 10):.3f}, "
+        #       f"50%: {np.percentile(sample_[3], 50):.3f}, "
+        #       f"90%: {np.percentile(sample_[3], 90):.3f}")
         
-        print(f"RG range: [{sample_[0:3].min():.3f}, {sample_[0:3].max():.3f}]")
-        print(f"Alpha range: [{sample_[3].min():.3f}, {sample_[3].max():.3f}]")
+        # print(f"RG range: [{sample_[0:3].min():.3f}, {sample_[0:3].max():.3f}]")
+        # print(f"Alpha range: [{sample_[3].min():.3f}, {sample_[3].max():.3f}]")
         
         
         # Extract non-zero voxels
@@ -299,7 +291,7 @@ class DiffusionInference3D:
         for idx, voxel in enumerate(indices):
             # Translate cube vertices to voxel position
         
-            color = torch.stack([voxel_grid[1:4, voxel[0], voxel[1], voxel[2]]]*8)
+            color = torch.stack([voxel_grid[0:3, voxel[0], voxel[1], voxel[2]]]*8)
             voxel_vertices = cube_vertices + voxel  # Add voxel position to cube vertices
             all_vertices.append(voxel_vertices)
             all_colors.append(color)
@@ -382,6 +374,13 @@ class DiffusionInference3D:
         plt.imshow(image)
         plt.axis('off')
         plt.show()
+
+        save_ply(
+            "generated.ply",
+            verts=unique_vertices,
+            faces=faces,
+            verts_colors=vertex_colors
+        )
             
 
 def visualize_tensor(tensor: torch.Tensor, config, threshold=0.5) -> None:

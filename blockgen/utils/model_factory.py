@@ -47,7 +47,7 @@ def create_model_and_trainer(
         voxel_config, 
         device=device,
         wandb_key=wandb_key,
-        project_name=project_name
+        project_name=project_name,
     )
     
     return trainer, diffusion_model

@@ -149,7 +149,7 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32, num_p
 
 if __name__ == "__main__":
     input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data"
-    output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data_voxelized"
+    output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data_voxelized_clean"
     
     try:
         process_dataset(

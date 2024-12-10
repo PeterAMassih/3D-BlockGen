@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 from ..configs.voxel_config import VoxelConfig
 from torch.optim.lr_scheduler import CosineAnnealingLR
+import gc
 
 class DiffusionTrainer:
-    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4, wandb_key=None, project_name="3D-BlockGen"):
+    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4, wandb_key=None, project_name="3D-Blockgen"):
         self.model = model
         self.model.to(device) # DO NOT FORGET
         self.config = config
@@ -176,19 +177,29 @@ class DiffusionTrainer:
         lr_history = []
         current_step = 0
         starting_step = 0
+
+        train_iter = iter(train_dataloader)
         
         # Load checkpoint if provided
         if checkpoint_path is not None:
             print(f"Resuming training from checkpoint: {checkpoint_path}")
+    
+            # Clear memory before loading
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            
             checkpoint = torch.load(checkpoint_path)
             
             # Get the models directory path from checkpoint path
             checkpoint_dir = Path(checkpoint_path).parent.parent
-            model_step = f"model_step_{checkpoint['step']}"
+            last_save_step = (checkpoint['step'] // save_every) * save_every
+            model_step = f"model_step_{last_save_step}"
             model_path = checkpoint_dir / 'models' / model_step
             
-            # Load the model weights (load_pretrained will append _main/_ema)
+            # Load model and optimizer
             self.model.load_pretrained(str(model_path))
+            self.model.to(self.device)
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             
             current_step = checkpoint['step']
@@ -197,6 +208,12 @@ class DiffusionTrainer:
             losses = checkpoint.get('training_losses', [])
             test_losses = checkpoint.get('test_losses', [])
             lr_history = checkpoint.get('lr_history', [])
+            
+            skipped_batches = current_step % len(train_dataloader)
+            # print(skipped_batches)
+            # print(len(train_iter))
+            for _ in range(skipped_batches):
+                next(train_iter)
             
             print(f"Resumed at step {current_step} with best test loss: {best_test_loss:.4f}")
         
@@ -231,8 +248,6 @@ class DiffusionTrainer:
                 config=training_config,
                 resume=True if checkpoint_path else False
             )
-        
-        train_iter = iter(train_dataloader)
         
         # Main training loop
         steps_to_run = total_steps - current_step
