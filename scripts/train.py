@@ -26,14 +26,15 @@ def main():
         use_rgb=True,  # Set to True if using RGBA data
         default_color=[0.5, 0.5, 0.5],
         alpha_weight=1.0,
-        rgb_weight=1.0
+        rgb_weight=1.0,
+        use_simple_mse=True
     )
     
     # Training parameters
     train_params = {
         'batch_size': 4,
         'test_split': 0.05,
-        'total_steps': 60_000,
+        'total_steps': 70_000,
         'save_every': 5_000,
         'eval_every': 10_000,
         'initial_lr': 1e-4,

@@ -20,11 +20,12 @@ class SharpBCEWithLogitsLoss(nn.Module):
     
 class RGBALoss(nn.Module):
     """Combined loss for RGBA voxels"""
-    def __init__(self, alpha_weight=1.0, rgb_weight=1.0):
+    def __init__(self, alpha_weight=1.0, rgb_weight=1.0, use_simple_mse=False):
         super().__init__()
         self.alpha_weight = alpha_weight
         self.rgb_weight = rgb_weight
         self.alpha_loss = nn.MSELoss()  # Better for binary classification, because we need class probabilities
+        self.use_simple_mse = use_simple_mse
     
     def forward(self, model_output, noisy_sample, timesteps, target, diffusion_model):
         """
@@ -40,6 +41,10 @@ class RGBALoss(nn.Module):
         pred_original = diffusion_model.predict_original_sample(
             noisy_sample, model_output, timesteps
         )
+
+        if self.use_simple_mse:
+            # Simple MSE on entire RGBA tensor
+            return F.mse_loss(pred_original, target)
         
         # Split channels - RGBA format
         pred_rgb = pred_original[:, :3]  # First 3 channels are RGB
