@@ -33,7 +33,7 @@ def main():
     train_params = {
         'batch_size': 4,
         'test_split': 0.05,
-        'total_steps': 50_000,
+        'total_steps': 60_000,
         'save_every': 5_000,
         'eval_every': 10_000,
         'initial_lr': 1e-4,
