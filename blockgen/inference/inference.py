@@ -14,7 +14,81 @@ from pytorch3d.transforms import random_rotation
 from pytorch3d.renderer import look_at_view_transform
 import matplotlib.pyplot as plt
 from pytorch3d.renderer import PointLights
-from pytorch3d.io import save_ply
+from pytorch3d.io.ply_io import _save_ply, _open_file
+import torch
+from typing import Optional
+from iopath.common.file_io import PathManager
+
+def save_ply_with_colors(
+    f,
+    verts: torch.Tensor,
+    faces: Optional[torch.LongTensor] = None,
+    verts_normals: Optional[torch.Tensor] = None,
+    verts_colors: Optional[torch.Tensor] = None,
+    ascii: bool = False,
+    decimal_places: Optional[int] = None,
+    path_manager: Optional[PathManager] = None,
+    colors_as_uint8=False
+) -> None:
+    """
+    Save a mesh to a .ply file with support for vertex colors.
+
+    Args:
+        f: File (or path) to which the mesh should be written.
+        verts: FloatTensor of shape (V, 3) giving vertex coordinates.
+        faces: LongTensor of shape (F, 3) giving faces.
+        verts_normals: FloatTensor of shape (V, 3) giving vertex normals.
+        verts_colors: FloatTensor of shape (V, 3) giving vertex colors in range [0, 1].
+        ascii: (bool) whether to use the ascii ply format.
+        decimal_places: Number of decimal places for saving if ascii=True.
+        path_manager: PathManager for interpreting f if it is a str.
+    """
+    if len(verts) and not (verts.dim() == 2 and verts.size(1) == 3):
+        message = "Argument 'verts' should either be empty or of shape (num_verts, 3)."
+        raise ValueError(message)
+
+    if faces is not None and len(faces) and not (faces.dim() == 2 and faces.size(1) == 3):
+        message = "Argument 'faces' should either be empty or of shape (num_faces, 3)."
+        raise ValueError(message)
+
+    if (
+        verts_normals is not None
+        and len(verts_normals)
+        and not (
+            verts_normals.dim() == 2
+            and verts_normals.size(1) == 3
+            and verts_normals.size(0) == verts.size(0)
+        )
+    ):
+        message = "Argument 'verts_normals' should either be empty or of shape (num_verts, 3)."
+        raise ValueError(message)
+
+    if (
+        verts_colors is not None
+        and len(verts_colors)
+        and not (
+            verts_colors.dim() == 2
+            and verts_colors.size(1) == 3
+            and verts_colors.size(0) == verts.size(0)
+        )
+    ):
+        message = "Argument 'verts_colors' should either be empty or of shape (num_verts, 3)."
+        raise ValueError(message)
+
+    if path_manager is None:
+        path_manager = PathManager()
+
+    with _open_file(f, path_manager, "wb") as f:
+        _save_ply(
+            f,
+            verts=verts,
+            faces=faces,
+            verts_normals=verts_normals,
+            verts_colors=verts_colors,
+            ascii=ascii,
+            decimal_places=decimal_places,
+            colors_as_uint8=colors_as_uint8,
+        )
 
 class DiffusionInference3D:
     def __init__(self, model, noise_scheduler, config, device='cuda'):
@@ -179,6 +253,9 @@ class DiffusionInference3D:
                 
                 print(f"RGB range: [{sample[:3].min():.3f}, {sample[:3].max():.3f}]")
                 print(f"Alpha range: [{sample[3].min():.3f}, {sample[3].max():.3f}]")
+                print(f"Red:[{sample[0].min():.3f}, {sample[0].max():.3f}]" )
+                print(f"Green: [[{sample[1].min():.3f}, {sample[1].max():.3f}]]")
+                print(f"Blue: [[{sample[1].min():.3f}, {sample[1].max():.3f}]]")
                 
                 # Get occupancy from alpha channel
                 occupancy = (sample[3] > adaptive_threshold).astype(bool)
@@ -375,11 +452,12 @@ class DiffusionInference3D:
         plt.axis('off')
         plt.show()
 
-        save_ply(
+        save_ply_with_colors(
             "generated.ply",
             verts=unique_vertices,
             faces=faces,
-            verts_colors=vertex_colors
+            verts_colors=vertex_colors,
+            colors_as_uint8=False  # Colors will be saved as floats in [0,1]
         )
             
 
