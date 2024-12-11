@@ -338,7 +338,8 @@ class DiffusionTrainer:
                             old_ckpt.unlink()
         
         # Final saves
-        self.model.save_pretrained(str(models_dir / "final_model"))
+        final_model_dir = models_dir / "final_model"
+        self.model.save_pretrained(str(final_model_dir))
         metrics = {
             'training_losses': losses,
             'test_losses': test_losses,
@@ -361,7 +362,9 @@ class DiffusionTrainer:
             })
             # Log final model
             final_artifact = wandb.Artifact('final_model', type='model')
-            final_artifact.add_dir(str(models_dir / "final_model"))
+            final_artifact.add_file(str(final_model_dir) + "_main")  # Note: add_file not add_dir
+            if self.model.ema_model is not None:
+                final_artifact.add_file(str(final_model_dir) + "_ema")
             self.wandb_run.log_artifact(final_artifact)
             self.wandb_run.finish()
         
