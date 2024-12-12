@@ -65,3 +65,43 @@ class RGBALoss(nn.Module):
         )
         
         return self.alpha_weight * alpha_loss + self.rgb_weight * rgb_loss
+
+class TwoStageLoss(nn.Module):
+    """Loss function for two-stage diffusion (shape then color)"""
+    def __init__(self, alpha_weight=1.0, rgb_weight=1.0, background_weight=0.1):
+        super().__init__()
+        self.alpha_weight = alpha_weight
+        self.rgb_weight = rgb_weight
+        self.background_weight = background_weight
+        self.shape_loss = nn.MSELoss()
+        self.color_loss = nn.MSELoss()
+    
+    def forward(self, model_output, noisy_sample, timesteps, target, diffusion_model):
+        pred_original = diffusion_model.predict_original_sample(
+            noisy_sample, model_output, timesteps
+        )
+
+        if diffusion_model.training_stage == 'shape':
+            # Shape stage: only care about alpha channel
+            if target.shape[1] == 4:
+                target = target[:, 3:4]  # Extract alpha if RGBA input
+            return self.shape_loss(pred_original, target)
+        else:
+            # Color stage: RGB loss weighted by fixed alpha mask
+            alpha_mask = target[:, 3:4]  # Use clean alpha from target
+            pred_rgb = pred_original
+            true_rgb = target[:, :3]
+            
+            # Loss for occupied voxels
+            occupied_loss = self.color_loss(
+                alpha_mask * pred_rgb,
+                alpha_mask * true_rgb
+            )
+            
+            # Loss for background (non-occupied) voxels
+            background_loss = self.color_loss(
+                (1 - alpha_mask) * pred_rgb,
+                torch.zeros_like(pred_rgb)
+            )
+            
+            return self.rgb_weight * occupied_loss + self.background_weight * background_loss

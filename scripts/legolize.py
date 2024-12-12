@@ -22,8 +22,8 @@ class LegoConverter:
             (2, 4, 1),  # 2x4 brick
             (2, 3, 1),  # 2x3 brick
             (2, 2, 1),  # 2x2 brick
-            (2, 1, 1),  # 1x2 brick
             (1, 4, 1),  # 1x4 brick
+            (2, 1, 1),  # 1x2 brick
             (1, 3, 1),  # 1x3 brick
             (1, 2, 1),  # 1x2 brick
             (1, 1, 1)   # 1x1 brick
@@ -82,6 +82,7 @@ class LegoConverter:
             return False
             
         # Check if space is already occupied
+        # 
         return not occupied[:, x:x+w, y:y+l, z:z+h].any()
 
     def _get_average_color(self, voxels: torch.Tensor, pos: Tuple[int, int, int], 
@@ -100,7 +101,7 @@ class LegoConverter:
         return (*avg_rgb, 1.0)  # Always use full alpha for placed bricks
 
     def _check_support(self, occupied: torch.Tensor, pos: Tuple[int, int, int], 
-                      size: Tuple[int, int, int]) -> bool:
+                      size: Tuple[int, int, int], threshold: float) -> bool:
         """Check if brick has adequate support from below."""
         x, y, z = pos
         w, l, h = size
@@ -111,7 +112,7 @@ class LegoConverter:
         # Check if at least 25% of the brick is supported from below
         support_area = occupied[0, x:x+w, y:y+l, z-1].sum()
         total_area = w * l
-        return support_area >= total_area * 0.25
+        return support_area >= total_area * threshold
 
     def convert_to_lego(self, voxels: torch.Tensor) -> List[LegoBrick]:
         """Convert voxel tensor to LEGO bricks."""
@@ -134,7 +135,8 @@ class LegoConverter:
                         for size in self.brick_sizes:
                             if self._check_space_available(occupied, (x, y, z), size):
                                 region = voxels[3, x:x+size[0], y:y+size[1], z:z+size[2]]
-                                if region.sum() > 0 and self._check_support(occupied, (x, y, z), size):
+                                # TODO should be exactly all voxel check
+                                if region.sum() == size[0] * size[1] * size[2] and self._check_support(occupied, (x, y, z), size, -1):
                                     best_size = size
                                     break
                         
@@ -198,7 +200,7 @@ class LegoConverter:
 
 if __name__ == "__main__":
     # Load voxel data (works with both RGBA and occupancy formats)
-    voxel_data = torch.load('0002c6eafa154e8bb08ebafb715a8d46.pt', weights_only=True)
+    voxel_data = torch.load('/Users/PeterAM/Desktop/Research_Project/3D-BlockGen/objaverse_data_voxelized/hf-objaverse-v1/glbs/000-000/e406fd52136949a688d2ed5879361021.pt', weights_only=True)
     
     # Create converter instance
     converter = LegoConverter()

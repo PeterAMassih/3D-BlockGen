@@ -10,15 +10,20 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import gc
 
 class DiffusionTrainer:
-    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4, wandb_key=None, project_name="3D-Blockgen"):
+    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4, wandb_key=None, project_name="3D-Blockgen", stage='shape'):
         self.model = model
-        self.model.to(device) # DO NOT FORGET
+        self.model.to(device)
         self.config = config
         self.device = device
         self.initial_lr = initial_lr
         self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
         self.text_encoder.eval()
         self.loss_fn = config.get_loss_fn(device)
+        
+        # Add stage management for two-stage training
+        self.stage = stage if config.mode == 'two_stage' else 'combined'
+        if config.mode == 'two_stage':
+            self.model.set_stage(stage)
         
         # Add wandb support
         self.wandb_key = wandb_key
@@ -116,19 +121,29 @@ class DiffusionTrainer:
             noisy_voxels, predicted_noise, timesteps
         )
         
-        if self.config.use_rgb:
+        # Handle different training modes
+        if self.config.mode == 'occupancy_only':
+            loss = self.loss_fn(pred_original, voxels)
+        else:  # rgba_combined or two_stage
             loss = self.loss_fn(
-                model_output=predicted_noise, 
+                model_output=predicted_noise,
                 noisy_sample=noisy_voxels,
                 timesteps=timesteps,
                 target=voxels,
                 diffusion_model=self.model
             )
-        else:
-            loss = self.loss_fn(pred_original, voxels)
         
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        if self.config.mode == 'two_stage':
+            # Only optimize parameters of current stage
+            params_to_clip = (
+                self.model.model.parameters() if self.stage == 'shape' 
+                else self.model.model_color.parameters()
+            )
+            torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
+        else:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         
@@ -140,7 +155,8 @@ class DiffusionTrainer:
             self.wandb_run.log({
                 'train_loss': loss.item(),
                 'learning_rate': optimizer.param_groups[0]['lr'],
-                'step': current_step
+                'step': current_step,
+                'stage': self.stage
             })
         
         return loss.item()
@@ -156,19 +172,32 @@ class DiffusionTrainer:
         Continues training seamlessly from checkpoint if provided.
         """
         # Create directory structure
+        # Modify save directories for two-stage mode
         save_dir = Path(save_dir)
+        if self.config.mode == 'two_stage':
+            save_dir = save_dir / self.stage
+        
         checkpoints_dir = save_dir / "checkpoints"
         models_dir = save_dir / "models"
         best_model_dir = save_dir / "best_model"
         
-        for dir_path in [checkpoints_dir, models_dir, best_model_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-        
+        # Create optimizer for current stage only
+        if self.config.mode == 'two_stage':
+            params = (
+                self.model.model.parameters() if self.stage == 'shape'
+                else self.model.model_color.parameters()
+            )
+        else:
+            params = self.model.parameters()
+            
         optimizer = torch.optim.AdamW(
-            self.model.parameters(), 
-            lr=self.initial_lr, 
+            params,
+            lr=self.initial_lr,
             weight_decay=0.01
         )
+
+        for dir_path in [checkpoints_dir, models_dir, best_model_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
         
         # Initialize training state
         best_test_loss = float('inf')
@@ -235,7 +264,11 @@ class DiffusionTrainer:
             'starting_step': starting_step,
             'use_rgb': self.config.use_rgb,
             'model_params': sum(p.numel() for p in self.model.parameters()),
-            'batch_size': train_dataloader.batch_size
+            'batch_size': train_dataloader.batch_size,
+            'mode': self.config.mode,
+            'stage': self.stage if self.config.mode == 'two_stage' else (
+                'occupancy_only' if not self.config.use_rgb else 'rgba_combined'
+            )
         }
         
         # Save config locally and initialize wandb if enabled
