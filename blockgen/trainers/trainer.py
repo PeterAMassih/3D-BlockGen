@@ -50,6 +50,10 @@ class DiffusionTrainer:
         Returns:
             Computed loss
         """
+        assert model_output.shape[1] == 3, "Color stage should predict RGB noise only"
+        assert noisy_sample.shape[1] == 4, "Color stage input should be RGBA"
+        assert target.shape[1] == 4, "Color stage target should be RGBA"
+
         if isinstance(self.loss_fn, (ColorStageLoss, RGBALoss)):
             # For custom loss functions that require the diffusion model
             return self.loss_fn(

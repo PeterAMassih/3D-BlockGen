@@ -18,6 +18,9 @@ class DiffusionModel3D(nn.Module):
         self.mode = mode
         self.stage = stage
 
+        if mode == 'two_stage' and stage not in ['shape', 'color']:
+            raise ValueError("Stage must be 'shape' or 'color' in two_stage mode")
+
         # Initialize noise scheduler
         self.noise_scheduler = (
             DDIMScheduler(num_train_timesteps=config.num_timesteps, beta_schedule="linear")
@@ -39,36 +42,46 @@ class DiffusionModel3D(nn.Module):
 
     def update_ema(self, step: int = None) -> None:
         """Update EMA model if enabled."""
-        if self.ema_model is not None:
-            if step is None or step >= self.config.ema_update_after_step:
-                self.ema_model.step(self.model.parameters())
+        if self.ema_model is not None and (step is None or step >= self.config.ema_update_after_step):
+            self.ema_model.step(self.model.parameters())
 
     def add_noise(self, clean_images: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         """Add noise to images based on mode and stage
         
-        In two_stage color mode:
-        - Takes full RGBA input
-        - Only adds noise to RGB channels
-        - Keeps alpha channel clean as a mask
+        Args:
+            clean_images: Input tensor to add noise to
+                shape: Either [B, 1, H, W, D] for occupancy or [B, 4, H, W, D] for RGBA
+            noise: Random noise tensor matching input shape
+            timesteps: Timesteps for noise addition
+        
+        Returns:
+            Noisy tensor with same shape as input
         """
-        if self.mode == 'two_stage' and self.stage == 'color':
-            # For color stage, add noise only to RGB channels
-            rgb = clean_images[:, :3]  # RGB channels
-            alpha = clean_images[:, 3:4]  # Keep alpha as mask
-            noisy_rgb = self.noise_scheduler.add_noise(rgb, noise[:, :3], timesteps)
-            return noisy_rgb
+        if self.mode == 'two_stage':
+            if self.stage == 'shape':
+                # Shape stage: Add noise to occupancy channel
+                return self.noise_scheduler.add_noise(clean_images, noise, timesteps)
+            else:  # color stage
+                # Color stage: Add noise only to RGB, keep alpha clean
+                rgb = clean_images[:, :3]  # [B, 3, H, W, D]
+                alpha = clean_images[:, 3:4]  # [B, 1, H, W, D]
+                noisy_rgb = self.noise_scheduler.add_noise(rgb, noise[:, :3], timesteps)
+                return torch.cat([noisy_rgb, alpha], dim=1)  # [B, 4, H, W, D]
         else:
-            # For all other modes, add noise to all channels
+            # Shape or combined mode: Add noise to all channels
             return self.noise_scheduler.add_noise(clean_images, noise, timesteps)
 
     def predict_original_sample(self, noisy_sample: torch.Tensor, noise_pred: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
-        """Predict original sample from noisy sample and predicted noise"""
-        alpha_prod = self.noise_scheduler.alphas_cumprod[timesteps] # dim = [B, T, 1, 1, 1]
+        """Predict original sample from noisy sample and predicted noise.
+        
+        Note: In color stage, this should be called only with RGB channels.
+        """
+        alpha_prod = self.noise_scheduler.alphas_cumprod[timesteps]  # [B]
         beta_prod = 1 - alpha_prod
         
-        # Use broadcasting for different samples in batch
-        alpha_prod = alpha_prod.view(-1, 1, 1, 1, 1) # dim = [B*T, 1, 1, 1, 1]
-        beta_prod = beta_prod.view(-1, 1, 1, 1, 1) # dim = [B*T, 1, 1, 1, 1]
+        # Use broadcasting: [B] -> [B, 1, 1, 1, 1]
+        alpha_prod = alpha_prod.view(-1, 1, 1, 1, 1)
+        beta_prod = beta_prod.view(-1, 1, 1, 1, 1)
         
         return (noisy_sample - (beta_prod ** 0.5) * noise_pred) / (alpha_prod ** 0.5)
 
@@ -82,8 +95,10 @@ class DiffusionModel3D(nn.Module):
         )
 
     def save_pretrained(self, save_path: str) -> None:
-        """Save model and EMA model if enabled"""
-        # Save main model with stage suffix in two_stage mode
+        """Save model and EMA model if enabled.
+        
+        Adds stage suffix only for two-stage mode to distinguish shape/color models.
+        """
         suffix = f"_{self.stage}" if self.mode == 'two_stage' else ""
         self.model.save_pretrained(f"{save_path}{suffix}_main")
         
@@ -91,12 +106,15 @@ class DiffusionModel3D(nn.Module):
             self.ema_model.save_pretrained(f"{save_path}{suffix}_ema")
 
     def load_pretrained(self, save_path: str, load_ema: bool = False) -> None:
-        """Load model weights, optionally from EMA checkpoint"""
+        """Load model weights, optionally from EMA checkpoint.
+        
+        Handles stage-specific paths for two-stage mode.
+        """
         suffix = f"_{self.stage}" if self.mode == 'two_stage' else ""
         
         if load_ema and self.ema_model is not None:
             self.ema_model = EMAModel.from_pretrained(
-                f"{save_path}{suffix}_ema", 
+                f"{save_path}{suffix}_ema",
                 model_cls=type(self.model)
             )
             self.ema_model.copy_to(self.model.parameters())

@@ -3,8 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ColorStageLoss(nn.Module):
-    """Loss function for color stage of two-stage training"""
-    def __init__(self, rgb_weight: float = 1.0,):
+    def __init__(self, rgb_weight: float = 1.0):
         super().__init__()
         self.rgb_weight = rgb_weight
         self.rgb_loss = nn.MSELoss()
@@ -12,26 +11,32 @@ class ColorStageLoss(nn.Module):
     def forward(self, model_output, noisy_sample, timesteps, target, diffusion_model):
         """
         Args:
-            model_output: Predicted noise for RGB channels
-            noisy_sample: Current noisy input (RGBA)
+            model_output: Predicted noise for RGB channels [B, 3, H, W, D]
+            noisy_sample: Current noisy input [B, 4, H, W, D] with clean alpha
             timesteps: Current timesteps
             target: Original clean sample [B, 4, H, W, D] (R, G, B, alpha)
             diffusion_model: DiffusionModel3D instance for scheduler access
         """
-        # Predict original RGB values
+        # For color stage:
+        # - noisy_sample contains RGBA where alpha is clean (binary mask)
+        # - model_output contains predicted RGB noise only (3 channels)
+        # - we want to predict original RGB values only where alpha > 0
+
+        # Predict original RGB values from noisy RGB
         pred_original = diffusion_model.predict_original_sample(
             noisy_sample[:, :3],  # Only RGB channels
             model_output,  # Predicted RGB noise
             timesteps
         )
         
+        # Get ground truth RGB and alpha mask
         true_rgb = target[:, :3]  # RGB channels
-        true_alpha = target[:, 3:4]  # Alpha channel as mask
+        alpha_mask = target[:, 3:4]  # Alpha channel as mask
         
-        # MSE for RGB, weighted by alpha mask
+        # MSE for RGB values, but only where alpha > 0
         rgb_loss = F.mse_loss(
-            true_alpha * pred_original,
-            true_alpha * true_rgb
+            alpha_mask * pred_original,
+            alpha_mask * true_rgb
         )
         
         return self.rgb_weight * rgb_loss

@@ -1,4 +1,3 @@
-from turtle import st
 import torch
 import argparse
 from pathlib import Path
@@ -98,8 +97,8 @@ def main():
     print(f"Final step: {training_metrics['final_step']}")
     print(f"Models and metrics saved in: {save_dir}")
     print("\nNow you can proceed with color stage training using the shape model from:")
-    print(f"  Best model: {save_dir}/best_model/best_model_shape")
-    print(f"  Final model: {save_dir}/models/final_model_shape")
+    print(f"  Best model: {save_dir}/{args.stage}/best_model/best_model")  
+    print(f"  Final model: {save_dir}/{args.stage}/models/final_model")   
 
 if __name__ == "__main__":
     main()
