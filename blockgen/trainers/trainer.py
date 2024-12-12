@@ -8,29 +8,60 @@ from pathlib import Path
 from ..configs.voxel_config import VoxelConfig
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import gc
+from ..models.diffusion import DiffusionModel3D
+from ..models.losses import ColorStageLoss, RGBALoss
 
 class DiffusionTrainer:
-    def __init__(self, model, config: VoxelConfig, device='cuda', initial_lr=1e-4, wandb_key=None, project_name="3D-Blockgen", stage='shape'):
+    def __init__(self, 
+                 model: DiffusionModel3D, 
+                 config: VoxelConfig, 
+                 device: str = 'cuda', 
+                 initial_lr: float = 1e-4, 
+                 wandb_key: str = None, 
+                 project_name: str = "3D-Blockgen"):
         self.model = model
-        self.model.to(device)
+        self.model.to(device)  # Explicit device placement
         self.config = config
         self.device = device
         self.initial_lr = initial_lr
+        
+        # Initialize text encoder
         self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
         self.text_encoder.eval()
+        
+        # Get appropriate loss function from config
         self.loss_fn = config.get_loss_fn(device)
         
-        # Add stage management for two-stage training
-        self.stage = stage if config.mode == 'two_stage' else 'combined'
-        if config.mode == 'two_stage':
-            self.model.set_stage(stage)
-        
-        # Add wandb support
+        # Initialize wandb
         self.wandb_key = wandb_key
         self.project_name = project_name
         self.wandb_run = None
         if self.wandb_key:
             wandb.login(key=self.wandb_key)
+
+    def compute_loss(self, model_output, noisy_sample, timesteps, target):
+        """
+        Computes loss based on the current mode and stage.
+        Args:
+            model_output: Predicted noise
+            noisy_sample: Current noisy input
+            timesteps: Current timesteps
+            target: Original clean sample
+        Returns:
+            Computed loss
+        """
+        if isinstance(self.loss_fn, (ColorStageLoss, RGBALoss)):
+            # For custom loss functions that require the diffusion model
+            return self.loss_fn(
+                model_output=model_output,
+                noisy_sample=noisy_sample,
+                timesteps=timesteps,
+                target=target,
+                diffusion_model=self.model
+            )
+        else:
+            # For simple loss functions like MSELoss
+            return self.loss_fn(model_output, target)
     
     def evaluate(self, dataloader):
         self.model.eval()
@@ -63,20 +94,12 @@ class DiffusionTrainer:
                     return_dict=True
                 ).sample
                 
-                pred_original = self.model.predict_original_sample(
-                    noisy_voxels, predicted_noise, timesteps
+                loss = self.compute_loss(
+                    model_output=predicted_noise,
+                    noisy_sample=noisy_voxels,
+                    timesteps=timesteps,
+                    target=voxels
                 )
-                
-                if self.config.use_rgb:
-                    loss = self.loss_fn(
-                        model_output=predicted_noise,
-                        noisy_sample=noisy_voxels,
-                        timesteps=timesteps,
-                        target=voxels,
-                        diffusion_model=self.model
-                    )
-                else:
-                    loss = self.loss_fn(pred_original, voxels) # Because shape is [B, 1, H, W, D] maybe need to squeeze(1) to check 
                 
                 total_loss += loss.item()
                 num_batches += 1
@@ -84,9 +107,11 @@ class DiffusionTrainer:
         avg_loss = total_loss / num_batches
         print(f"Test Loss: {avg_loss:.4f}")
         
-        # Log to wandb if enabled
         if self.wandb_run:
-            self.wandb_run.log({'test_loss': avg_loss})
+            self.wandb_run.log({
+                'test_loss': avg_loss,
+                'stage': self.config.get_stage()  # Use helper method
+            })
             
         return avg_loss
     
@@ -117,88 +142,56 @@ class DiffusionTrainer:
             return_dict=True
         ).sample
         
-        pred_original = self.model.predict_original_sample(
-            noisy_voxels, predicted_noise, timesteps
-        )
-        
-        # Handle different training modes
-        if self.config.mode == 'occupancy_only':
-            loss = self.loss_fn(pred_original, voxels)
-        else:  # rgba_combined or two_stage
-            loss = self.loss_fn(
+        loss = self.compute_loss(
                 model_output=predicted_noise,
                 noisy_sample=noisy_voxels,
                 timesteps=timesteps,
-                target=voxels,
-                diffusion_model=self.model
+                target=voxels
             )
         
         loss.backward()
-        if self.config.mode == 'two_stage':
-            # Only optimize parameters of current stage
-            params_to_clip = (
-                self.model.model.parameters() if self.stage == 'shape' 
-                else self.model.model_color.parameters()
-            )
-            torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
-        else:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         
-        # Update EMA model if enabled
         self.model.update_ema(current_step)
         
-        # Log to wandb if enabled
         if self.wandb_run:
             self.wandb_run.log({
                 'train_loss': loss.item(),
                 'learning_rate': optimizer.param_groups[0]['lr'],
                 'step': current_step,
-                'stage': self.stage
+                'stage': self.config.get_stage()  # Use helper method
             })
         
         return loss.item()
         
     def train(self, train_dataloader, test_dataloader, 
-        total_steps=100_000, 
-        save_every=20_000,
-        eval_every=20_000,
-        save_dir='training_runs',
-        checkpoint_path=None):
-        """
-        Train the diffusion model with organized checkpointing.
-        Continues training seamlessly from checkpoint if provided.
-        """
+              total_steps: int = 100_000, 
+              save_every: int = 20_000,
+              eval_every: int = 20_000,
+              save_dir: str = 'training_runs',
+              checkpoint_path: str = None):
+        """Train the diffusion model with organized checkpointing."""
+        
         # Create directory structure
-        # Modify save directories for two-stage mode
         save_dir = Path(save_dir)
         if self.config.mode == 'two_stage':
-            save_dir = save_dir / self.stage
-        
+            save_dir = save_dir / self.config.stage
+            
         checkpoints_dir = save_dir / "checkpoints"
         models_dir = save_dir / "models"
         best_model_dir = save_dir / "best_model"
         
-        # Create optimizer for current stage only
-        if self.config.mode == 'two_stage':
-            params = (
-                self.model.model.parameters() if self.stage == 'shape'
-                else self.model.model_color.parameters()
-            )
-        else:
-            params = self.model.parameters()
-            
+        for dir_path in [checkpoints_dir, models_dir, best_model_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+        
         optimizer = torch.optim.AdamW(
-            params,
+            self.model.parameters(),
             lr=self.initial_lr,
             weight_decay=0.01
         )
 
-        for dir_path in [checkpoints_dir, models_dir, best_model_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-        
         # Initialize training state
         best_test_loss = float('inf')
         losses = []
@@ -212,21 +205,16 @@ class DiffusionTrainer:
         # Load checkpoint if provided
         if checkpoint_path is not None:
             print(f"Resuming training from checkpoint: {checkpoint_path}")
-    
-            # Clear memory before loading
+            
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
             
             checkpoint = torch.load(checkpoint_path)
-            
-            # Get the models directory path from checkpoint path
             checkpoint_dir = Path(checkpoint_path).parent.parent
             last_save_step = (checkpoint['step'] // save_every) * save_every
-            model_step = f"model_step_{last_save_step}"
-            model_path = checkpoint_dir / 'models' / model_step
+            model_path = checkpoint_dir / 'models' / f"model_step_{last_save_step}"
             
-            # Load model and optimizer
             self.model.load_pretrained(str(model_path))
             self.model.to(self.device)
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -237,13 +225,6 @@ class DiffusionTrainer:
             losses = checkpoint.get('training_losses', [])
             test_losses = checkpoint.get('test_losses', [])
             lr_history = checkpoint.get('lr_history', [])
-
-            # No need to do that because it is okay reshuffling also
-            # skipped_batches = current_step % len(train_dataloader)
-            # # print(skipped_batches)
-            # # print(len(train_iter))
-            # for i in range(skipped_batches):
-            #     next(train_iter)
             
             print(f"Resumed at step {current_step} with best test loss: {best_test_loss:.4f}")
         
@@ -263,16 +244,13 @@ class DiffusionTrainer:
             'start_time': time.strftime("%Y%m%d-%H%M%S"),
             'resume_checkpoint': checkpoint_path,
             'starting_step': starting_step,
-            'use_rgb': self.config.use_rgb,
-            'model_params': sum(p.numel() for p in self.model.parameters()),
-            'batch_size': train_dataloader.batch_size,
             'mode': self.config.mode,
-            'stage': self.stage if self.config.mode == 'two_stage' else (
-                'occupancy_only' if not self.config.use_rgb else 'rgba_combined'
-            )
+            'stage': self.config.get_stage(),  # Use helper method
+            'model_params': sum(p.numel() for p in self.model.parameters()),
+            'batch_size': train_dataloader.batch_size
         }
         
-        # Save config locally and initialize wandb if enabled
+        # Save config and initialize wandb
         with open(save_dir / "training_config.json", 'w') as f:
             json.dump(training_config, f, indent=2)
             
@@ -295,14 +273,11 @@ class DiffusionTrainer:
                     train_iter = iter(train_dataloader)
                     batch = next(train_iter)
 
-                # Do a training step
                 loss = self.train_step(batch, optimizer, current_step)
                 
-                # Update learning rate
                 current_lr = scheduler.get_last_lr()[0]
                 scheduler.step()
                 
-                # Update tracking
                 current_step += 1
                 losses.append(loss)
                 lr_history.append(current_lr)
@@ -312,12 +287,11 @@ class DiffusionTrainer:
                     'lr': f"{current_lr:.6f}"
                 })
                 
-                # Evaluation TODO bug here with the best_loss - Not important
+                # Evaluation
                 if current_step % eval_every == 0:
                     test_loss = self.evaluate(test_dataloader)
                     test_losses.append(test_loss)
                     
-                    # Save metrics locally
                     metrics = {
                         'training_losses': losses,
                         'test_losses': test_losses,
@@ -330,10 +304,9 @@ class DiffusionTrainer:
                     with open(save_dir / "metrics.json", 'w') as f:
                         json.dump(metrics, f)
                     
-                    # Save best model
                     if test_loss < best_test_loss:
                         best_test_loss = test_loss
-                        self.model.save_pretrained(str(best_model_dir / f"best_model"))
+                        self.model.save_pretrained(str(best_model_dir / "best_model"))
                         if self.wandb_run:
                             self.wandb_run.summary['best_test_loss'] = best_test_loss
                             self.wandb_run.summary['best_model_step'] = current_step
@@ -341,7 +314,6 @@ class DiffusionTrainer:
                 
                 # Regular checkpoints
                 if current_step % save_every == 0:
-                    # Save model and checkpoint
                     self.model.save_pretrained(str(models_dir / f"model_step_{current_step}"))
                     
                     checkpoint_data = {
@@ -359,7 +331,6 @@ class DiffusionTrainer:
                     checkpoint_path = checkpoints_dir / f"checkpoint_step_{current_step}.pth"
                     torch.save(checkpoint_data, checkpoint_path)
                     
-                    # Log checkpoint to wandb
                     if self.wandb_run:
                         artifact = wandb.Artifact(f'checkpoint-{current_step}', type='model')
                         artifact.add_file(str(checkpoint_path))
@@ -374,6 +345,7 @@ class DiffusionTrainer:
         # Final saves
         final_model_dir = models_dir / "final_model"
         self.model.save_pretrained(str(final_model_dir))
+        
         metrics = {
             'training_losses': losses,
             'test_losses': test_losses,
@@ -387,16 +359,15 @@ class DiffusionTrainer:
             json.dump(metrics, f)
             
         if self.wandb_run:
-            # Log final metrics
             self.wandb_run.summary.update({
                 'final_test_loss': test_losses[-1] if test_losses else None,
                 'final_train_loss': losses[-1] if losses else None,
                 'best_test_loss_overall': best_test_loss,
                 'total_training_time': time.time() - time.mktime(time.strptime(training_config['start_time'], "%Y%m%d-%H%M%S"))
             })
-            # Log final model
+            
             final_artifact = wandb.Artifact('final_model', type='model')
-            final_artifact.add_file(str(final_model_dir) + "_main")  # Note: add_file not add_dir
+            final_artifact.add_file(str(final_model_dir) + "_main")
             if self.model.ema_model is not None:
                 final_artifact.add_file(str(final_model_dir) + "_ema")
             self.wandb_run.log_artifact(final_artifact)

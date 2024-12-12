@@ -50,23 +50,60 @@ class VoxelTextDataset(Dataset):
         
     def _process_voxel_data(self, voxel_data):
         """Process voxel data according to configuration"""
-        if self.config.use_rgb:
+        if self.config.mode == 'two_stage':
+            if self.config.stage == 'shape':
+                # Shape stage: Handle binary occupancy
+                # Input: [1, H, W, D] or potentially other shapes
+                if voxel_data.shape[0] > 1:
+                    voxel_data = voxel_data[-1:]  # Take the last channel (occupancy)
+                # Output: [1, H, W, D] (binary occupancy)
+                return (voxel_data > 0).float()
+            elif self.config.stage == 'color':
+                # Color stage: Handle RGBA format
+                # Input: [4, H, W, D] or potentially [1, H, W, D]
+                if voxel_data.shape[0] == 4:
+                    # Already in RGBA format
+                    # Output: [4, H, W, D] (RGBA with binary alpha)
+                    alpha = (voxel_data[3:4] > 0).float()
+                    rgb = voxel_data[:3]
+                    return torch.cat([rgb, alpha], dim=0)
+                elif voxel_data.shape[0] == 1:
+                    # Convert occupancy to RGBA
+                    # Output: [4, H, W, D] (RGBA)
+                    alpha = (voxel_data > 0).float()  # [1, H, W, D]
+                    rgb = self.config.default_color.view(3, 1, 1, 1).to(voxel_data.device)
+                    rgb = rgb.repeat(1, *voxel_data.shape[1:])  # [3, H, W, D]
+                    return torch.cat([rgb, alpha], dim=0)
+                else:
+                    raise ValueError("Unexpected voxel data shape for color stage")
+        elif self.config.mode == 'combined':
+            # Combined mode: Handle RGBA or convert occupancy to RGBA
+            # Input: [4, H, W, D] or [1, H, W, D]
             if voxel_data.shape[0] == 4:
                 # Already in RGBA format
+                # Output: [4, H, W, D] (RGBA with binary alpha)
                 alpha = (voxel_data[3:4] > 0).float()
                 rgb = voxel_data[:3]
                 return torch.cat([rgb, alpha], dim=0)
-            else:
+            elif voxel_data.shape[0] == 1:
                 # Convert occupancy to RGBA
+                # Output: [4, H, W, D] (RGBA)
                 alpha = (voxel_data > 0).float()  # [1, H, W, D]
                 rgb = self.config.default_color.view(3, 1, 1, 1).to(voxel_data.device)
                 rgb = rgb.repeat(1, *voxel_data.shape[1:])  # [3, H, W, D]
-                return torch.cat([rgb, alpha], dim=0)  # [4, H, W, D]
-        else:
+                return torch.cat([rgb, alpha], dim=0)
+            else:
+                raise ValueError("Unexpected voxel data shape for combined mode")
+        elif self.config.mode == 'shape':
+            # Shape-only mode: Handle binary occupancy
+            # Input: [1, H, W, D] or potentially other shapes
             if voxel_data.shape[0] > 1:
-                voxel_data = voxel_data[-1:] # take the last one which is occupancy TODO IF RGBAO change
-
+                voxel_data = voxel_data[-1:]  # Take the last channel (occupancy)
+            # Output: [1, H, W, D] (binary occupancy)
             return (voxel_data > 0).float()
+        else:
+            raise ValueError(f"Unsupported mode: {self.config.mode}")
+
     
     def _create_simple_prompt(self, model_id):
         if model_id in self.annotations:

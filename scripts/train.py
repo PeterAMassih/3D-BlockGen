@@ -1,3 +1,4 @@
+from turtle import st
 import torch
 import argparse
 from pathlib import Path
@@ -14,8 +15,12 @@ def parse_args():
     parser.add_argument('--data_dir', type=str, default='objaverse_data_voxelized', help='Directory containing voxel data')
     parser.add_argument('--annotation_file', type=str, default='objaverse_data/annotations.json', 
                        help='Path to annotations file')
-    parser.add_argument('--save_dir', type=str, default='runs/experiment_color', help='Directory to save outputs')
+    parser.add_argument('--save_dir', type=str, default='runs/experiment_two_stage_shape', help='Directory to save outputs')
     parser.add_argument('--checkpoint_path', type=str, default=None, help='Path to checkpoint for resuming training')
+    parser.add_argument('--mode', type=str, choices=['occupancy_only', 'rgba_combined', 'two_stage'], default='two_stage',
+                       help='Training mode')
+    parser.add_argument('--stage', type=str, choices=['shape', 'color'], default='shape',
+                       help='Training stage for two-stage mode')
     return parser.parse_args()
 
 def main():
@@ -23,18 +28,19 @@ def main():
     
     # Set up configs
     voxel_config = VoxelConfig(
-        use_rgb=True,  # Set to True if using RGBA data
+        mode=args.mode,  # Using two-stage mode
+        stage=args.stage,  # Start with shape stage
         default_color=[0.5, 0.5, 0.5],
         alpha_weight=1.0,
         rgb_weight=1.0,
-        use_simple_mse=True
+        use_simple_mse=False  # If use simple MSE loss for RGBALoss only in the combined mode
     )
     
     # Training parameters
     train_params = {
         'batch_size': 4,
-        'test_split': 0.05,
-        'total_steps': 70_000,
+        'test_split': 0.02,
+        'total_steps': 130_000,
         'save_every': 5_000,
         'eval_every': 10_000,
         'initial_lr': 1e-4,
@@ -50,10 +56,10 @@ def main():
         seed=42  # Set seed for reproducibility
     )
     
-    # Paths
+    # Paths - add stage to save directory
     data_dir = Path(args.data_dir)
     annotation_file = Path(args.annotation_file)
-    save_dir = Path(args.save_dir)
+    save_dir = Path(args.save_dir) # Add shape subdirectory
     checkpoint_path = args.checkpoint_path
     
     # Create dataloaders
@@ -73,7 +79,7 @@ def main():
         resolution=32,
         device=train_params['device'],
         wandb_key=args.wandb_key,
-        project_name=args.project_name
+        project_name=args.project_name,
     )
     
     # Start training
@@ -87,10 +93,13 @@ def main():
         checkpoint_path=checkpoint_path
     )
     
-    print("Training completed!")
+    print("Shape stage training completed!")
     print(f"Best test loss: {training_metrics['best_test_loss']:.4f}")
     print(f"Final step: {training_metrics['final_step']}")
     print(f"Models and metrics saved in: {save_dir}")
+    print("\nNow you can proceed with color stage training using the shape model from:")
+    print(f"  Best model: {save_dir}/best_model/best_model_shape")
+    print(f"  Final model: {save_dir}/models/final_model_shape")
 
 if __name__ == "__main__":
     main()
