@@ -116,24 +116,25 @@ class DiffusionInference3D:
             encoder_hidden_states = self.text_encoder(**text_inputs)[0]
         return encoder_hidden_states
 
-    def sample(self, prompt, num_samples=8, image_size=(32, 32, 32), show_intermediate=False, guidance_scale=7.0, use_mean_init=False, py3d=True):
+    def sample(self, prompt, num_samples=8, image_size=(32, 32, 32), show_intermediate=False, guidance_scale=7.0, use_mean_init=False, py3d=True, use_rotations=True):
         with torch.no_grad():
             do_class_guidance = guidance_scale > 1.0
             
+            # Initialize noise with correct shape: [B, C, H, W, D]
             num_channels = 4 if self.config.use_rgb else 1
             noise = torch.randn(num_samples, num_channels, *image_size).to(self.device)
             
-            
+            # Encode prompts
             encoder_hidden_states = self.encode_prompt([prompt] * num_samples)
             if do_class_guidance:
                 encoder_hidden_states_uncond = self.encode_prompt([""] * num_samples)
     
             timesteps = self.noise_scheduler.timesteps.to(self.device)
             # print(timesteps)
-
+    
             # timesteps = timesteps[300:]
-
             
+            # Initialize starting point
             if use_mean_init:
                 mean_data = 0.5 * torch.ones_like(noise)
                 sample = self.noise_scheduler.add_noise(
@@ -145,46 +146,61 @@ class DiffusionInference3D:
                 sample = noise
             
             for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps)):
-                residual = self.model(
-                    sample, 
-                    t,
-                    encoder_hidden_states=encoder_hidden_states
-                ).sample
+                # Function to get prediction with rotations
+                def get_prediction_with_rotations(input_sample, states):
+                    # Original orientation
+                    pred1 = self.model(input_sample, t, encoder_hidden_states=states).sample
     
-                if do_class_guidance: 
-                    residual_uncond = self.model(
-                        sample, 
-                        t,
-                        encoder_hidden_states=encoder_hidden_states_uncond
-                    ).sample
+                    # First rotation: [B, C, H, W, D] -> [B, C, D, H, W]
+                    sample_rot1 = input_sample.permute(0, 1, 4, 2, 3)
+                    pred2 = self.model(sample_rot1, t, encoder_hidden_states=states).sample
+                    pred2 = pred2.permute(0, 1, 3, 4, 2)  # Back to [B, C, H, W, D]
+    
+                    # Second rotation: [B, C, H, W, D] -> [B, C, W, D, H]
+                    sample_rot2 = input_sample.permute(0, 1, 3, 4, 2)
+                    pred3 = self.model(sample_rot2, t, encoder_hidden_states=states).sample
+                    pred3 = pred3.permute(0, 1, 4, 2, 3)  # Back to [B, C, H, W, D]
+    
+                    # Average predictions
+                    return (pred1 + pred2 + pred3) / 3.0
+    
+                # Get conditioned prediction
+                if use_rotations:
+                    residual = get_prediction_with_rotations(sample, encoder_hidden_states)
+                else:
+                    residual = self.model(sample, t, encoder_hidden_states=encoder_hidden_states).sample
+    
+                # Apply classifier guidance if needed
+                if do_class_guidance:
+                    if use_rotations:
+                        residual_uncond = get_prediction_with_rotations(sample, encoder_hidden_states_uncond)
+                    else:
+                        residual_uncond = self.model(
+                            sample,
+                            t,
+                            encoder_hidden_states=encoder_hidden_states_uncond
+                        ).sample
                     
-                    residual = residual_uncond + guidance_scale*(residual - residual_uncond)
+                    # Apply classifier guidance
+                    residual = residual_uncond + guidance_scale * (residual - residual_uncond)
     
+                # Compute predicted original sample
                 alpha_prod_t = self.noise_scheduler.alphas_cumprod[t]
                 beta_prod_t = 1 - alpha_prod_t
                 pred_original_sample = (sample - beta_prod_t**0.5 * residual) / (alpha_prod_t ** 0.5)
                 # print(t.item(), (alpha_prod_t**0.5).item(), (beta_prod_t**0.5).item())
-
+    
                 # pred_original_sample = pred_original_sample.clamp(0, 1)
     
                 if show_intermediate and t % 50 == 49:
                     print(f"timestep: {t}")
                     if not py3d:
-                        self.visualize_samples(sample, threshold=0.25) 
-                        self.visualize_samples(pred_original_sample, threshold=0.25)
+                        self.visualize_samples(sample, threshold=0.5)
+                        self.visualize_samples(pred_original_sample, threshold=0.5)
                     else:
-                        #self.visualize_samples_p3d(sample[0], threshold=0.5)
-                        self.visualize_samples_p3d(pred_original_sample[0], threshold=0.25)
-                
-                # prev_t = self.noise_scheduler.previous_timestep(t)
-                # alpha_prod_t_prev = self.noise_scheduler.alphas_cumprod[prev_t] if prev_t >= 0 else self.noise_scheduler.one
-                # beta_prod_t_prev = 1 - alpha_prod_t_prev
-                # current_alpha_t = alpha_prod_t / alpha_prod_t_prev
-                # current_beta_t = 1 - current_alpha_t
-                # pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * current_beta_t) / beta_prod_t
-                # current_sample_coeff = current_alpha_t ** (0.5) * beta_prod_t_prev / beta_prod_t
-                # sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * sample
-                
+                        self.visualize_samples_p3d(pred_original_sample[0], threshold=0.5)
+    
+                # Get next sample
                 sample = self.noise_scheduler.step(residual, t, sample).prev_sample
                 
             return sample
@@ -236,15 +252,23 @@ class DiffusionInference3D:
         """
         Visualize generated samples with both 2D slices and 3D rendering.
         Args:
-            samples: Tensor of shape [B, C, H, W, D] where C is 1 (occupancy) or 4 (RGBA)
+            samples: Tensor of shape [B, C, H, W, D] where:
+                    B = batch size
+                    C = channels (1 for occupancy, 4 for RGBA)
+                    H, W, D = spatial dimensions (e.g., 32, 32, 32)
             threshold: Optional threshold value. If None, will be determined by distribution
         """
-        samples_ = samples.cpu().numpy()
-        fig, axs = plt.subplots(2, len(samples_), figsize=(4*len(samples_), 8))
+        # Convert to numpy: maintains same dimensions
+        samples_ = samples.cpu().numpy()  # [B, C, H, W, D]
         
-        for i, sample in enumerate(samples_):
+        # Setup plots
+        fig, axs = plt.subplots(2, len(samples_), figsize=(4*len(samples_), 8))
+        if len(samples_) == 1:  # Handle single sample case
+            axs = axs.reshape(-1, 1)
+        
+        for i, sample in enumerate(samples_):  # sample shape: [C, H, W, D]
             if self.config.use_rgb:
-                # Print distributions and set threshold
+                # Print statistics
                 if threshold is None:
                     adaptive_threshold = np.percentile(sample[3], 90)
                     print(f"Using adaptive threshold: {adaptive_threshold:.3f}")
@@ -253,33 +277,34 @@ class DiffusionInference3D:
                 
                 print(f"RGB range: [{sample[:3].min():.3f}, {sample[:3].max():.3f}]")
                 print(f"Alpha range: [{sample[3].min():.3f}, {sample[3].max():.3f}]")
-                print(f"Red:[{sample[0].min():.3f}, {sample[0].max():.3f}]" )
-                print(f"Green: [[{sample[1].min():.3f}, {sample[1].max():.3f}]]")
-                print(f"Blue: [[{sample[1].min():.3f}, {sample[1].max():.3f}]]")
+                print(f"Red: [{sample[0].min():.3f}, {sample[0].max():.3f}]")
+                print(f"Green: [{sample[1].min():.3f}, {sample[1].max():.3f}]")
+                print(f"Blue: [{sample[2].min():.3f}, {sample[2].max():.3f}]")
                 
-                # Get occupancy from alpha channel
+                # Get binary occupancy from alpha channel [H, W, D]
                 occupancy = (sample[3] > adaptive_threshold).astype(bool)
-                # Ensure RGB is in [0,1] range
+                # Clip RGB values to [0,1] range [3, H, W, D]
                 rgb = np.clip(sample[:3], 0, 1)
                 
                 print(f"Occupied voxels: {np.sum(occupancy)} ({(np.sum(occupancy)/occupancy.size)*100:.2f}% of volume)")
                 
-                # 2D slice visualization
-                mid_slice_idx = sample.shape[2]//2
-                # Create RGBA slice image
-                rgb_slice = rgb[:, :, mid_slice_idx]  # Shape: [3, H, W]
-                alpha_slice = occupancy[:, :, mid_slice_idx]  # Shape: [H, W]
+                # Mid-depth slice visualization
+                mid_depth = sample.shape[3] // 2  # Get middle of depth dimension
                 
-                # Create empty RGBA image
-                slice_img = np.zeros((*rgb_slice.shape[1:], 4))  # Shape: [H, W, 4]
+                # Get RGB and alpha for middle slice
+                rgb_slice = rgb[:, :, :, mid_depth]  # [3, H, W]
+                alpha_slice = occupancy[:, :, mid_depth]  # [H, W]
+                
+                # Create RGBA slice image [H, W, 4]
+                slice_img = np.zeros((*rgb_slice.shape[1:], 4))  # [H, W, 4]
                 if np.any(alpha_slice):
-                    # For occupied voxels, set RGB and alpha
-                    rgb_occupied = np.moveaxis(rgb_slice[:, alpha_slice], 0, -1)  # Move channels to end
-                    slice_img[alpha_slice] = np.concatenate([rgb_occupied, np.ones((np.sum(alpha_slice), 1))], axis=1)
+                    # Move RGB channels to last dimension for occupied voxels
+                    rgb_slice_hwc = np.moveaxis(rgb_slice, 0, -1)  # [H, W, 3]
+                    slice_img[alpha_slice] = np.concatenate([rgb_slice_hwc[alpha_slice], np.ones((np.sum(alpha_slice), 1))], axis=1)
                 
                 # Show 2D slice
                 axs[0, i].imshow(slice_img)
-                axs[0, i].set_title(f"Center Slice")
+                axs[0, i].set_title("Center Slice")
                 axs[0, i].axis("off")
                 
                 # 3D visualization
@@ -287,38 +312,39 @@ class DiffusionInference3D:
                 ax.remove()
                 ax = fig.add_subplot(2, len(samples_), len(samples_) + i + 1, projection='3d')
                 
-                # Create RGBA colors for voxels
+                # Create colors for voxels [H, W, D, 4]
                 colors = np.zeros((*occupancy.shape, 4))
                 if np.any(occupancy):
-                    # Set RGB values only for occupied voxels
-                    for c in range(3):
-                        colors[occupancy, c] = rgb[c, occupancy]
-                    # Set alpha to 1 for occupied voxels
+                    # Convert RGB from [3, H, W, D] to [H, W, D, 3]
+                    rgb_hwdc = np.moveaxis(rgb, 0, -1)
+                    colors[occupancy, :3] = rgb_hwdc[occupancy]
                     colors[occupancy, 3] = 1.0
                 
                 ax.voxels(occupancy, facecolors=colors, edgecolor='k', alpha=0.8)
-                ax.view_init(elev=30, azim=45)
-                ax.set_title("3D View")
                 
             else:
-                # Single channel visualization
-                binary_sample = (sample[0] > threshold).astype(bool)
-                axs[0, i].imshow(binary_sample[:, :, sample.shape[2]//2], cmap="gray")
-                axs[0, i].set_title(f"Center Slice")
+                # Single channel case
+                binary_sample = (sample[0] > threshold).astype(bool)  # [H, W, D]
+                
+                # Show middle slice
+                axs[0, i].imshow(binary_sample[:, :, binary_sample.shape[2]//2], cmap="gray")
+                axs[0, i].set_title("Center Slice")
                 axs[0, i].axis("off")
                 
+                # 3D visualization
                 ax = axs[1, i]
                 ax.remove()
                 ax = fig.add_subplot(2, len(samples_), len(samples_) + i + 1, projection='3d')
                 ax.voxels(binary_sample, edgecolor='k')
-                ax.view_init(elev=30, azim=45)
-                ax.set_title("3D View")
             
-            # Set axis limits for 3D plot
+            # Set 3D plot properties
+            ax.view_init(elev=30, azim=45)
+            ax.set_title("3D View")
             ax.set_box_aspect([1, 1, 1])
-            ax.set_xlim(0, occupancy.shape[0])
-            ax.set_ylim(0, occupancy.shape[1])
-            ax.set_zlim(0, occupancy.shape[2])
+            shape = occupancy.shape if self.config.use_rgb else binary_sample.shape
+            ax.set_xlim(0, shape[0])
+            ax.set_ylim(0, shape[1])
+            ax.set_zlim(0, shape[2])
         
         plt.tight_layout()
         plt.show()
@@ -347,12 +373,12 @@ class DiffusionInference3D:
         vertices = indices.float()  # Convert voxel indices to vertices
         
         cube_faces = torch.tensor([
-            [0, 1, 2], [0, 2, 3],  # Bottom face
-            [4, 5, 6], [4, 6, 7],  # Top face
-            [0, 1, 5], [0, 5, 4],  # Side faces
-            [2, 3, 7], [2, 7, 6],
-            [1, 2, 6], [1, 6, 5],
-            [0, 3, 7], [0, 7, 4]
+            [0, 1, 2], [0, 2, 3], #[0, 2, 1], [0, 3, 2],  # Bottom face
+            [4, 5, 6], [4, 6, 7], [4, 6, 5], [4, 7, 6],  # Top face
+            [0, 1, 5], [0, 5, 4], [0, 5, 1], [0, 4, 5],  # Side faces
+            [2, 3, 7], [2, 7, 6], [2, 7, 3], [2, 6, 7],
+            [1, 2, 6], [1, 6, 5], [1, 6, 2], [1, 5, 6],
+            [0, 3, 7], [0, 7, 4], [0, 7, 3], [0, 4, 7]
         ], dtype=torch.int64, device=device)
         
         # Generate vertices for each voxel cube
@@ -360,6 +386,8 @@ class DiffusionInference3D:
             [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # Bottom face
             [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]   # Top face
         ], dtype=torch.float32, device=device)
+
+        cube_vertices = 0.95*cube_vertices
         
         all_vertices = []
         all_colors = []

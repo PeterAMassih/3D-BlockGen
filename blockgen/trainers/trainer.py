@@ -237,12 +237,13 @@ class DiffusionTrainer:
             losses = checkpoint.get('training_losses', [])
             test_losses = checkpoint.get('test_losses', [])
             lr_history = checkpoint.get('lr_history', [])
-            
-            skipped_batches = current_step % len(train_dataloader)
-            # print(skipped_batches)
-            # print(len(train_iter))
-            for _ in range(skipped_batches):
-                next(train_iter)
+
+            # No need to do that because it is okay reshuffling also
+            # skipped_batches = current_step % len(train_dataloader)
+            # # print(skipped_batches)
+            # # print(len(train_iter))
+            # for i in range(skipped_batches):
+            #     next(train_iter)
             
             print(f"Resumed at step {current_step} with best test loss: {best_test_loss:.4f}")
         
