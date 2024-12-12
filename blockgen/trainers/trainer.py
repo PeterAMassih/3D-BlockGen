@@ -63,6 +63,12 @@ class DiffusionTrainer:
             # For simple loss functions like MSELoss
             return self.loss_fn(model_output, target)
     
+    def _get_model_save_path(self, base_dir: str, step: int = None) -> str:
+        """Constructs save path for model checkpoint directories."""
+        suffix = f"_{self.model.stage}" if self.model.mode == 'two_stage' else ""
+        step_suffix = f"_step_{step}" if step is not None else ""
+        return f"{base_dir}{suffix}{step_suffix}"
+    
     def evaluate(self, dataloader):
         self.model.eval()
         total_loss = 0.0
@@ -314,8 +320,13 @@ class DiffusionTrainer:
                 
                 # Regular checkpoints
                 if current_step % save_every == 0:
-                    self.model.save_pretrained(str(models_dir / f"model_step_{current_step}"))
+                    # Determine the base save path for the step
+                    save_path = self._get_model_save_path(str(models_dir), step=current_step)
                     
+                    # Save the model and optionally the EMA model
+                    self.model.save_pretrained(save_path)
+                    
+                    # Save checkpoint data
                     checkpoint_data = {
                         'step': current_step,
                         'optimizer_state_dict': optimizer.state_dict(),
@@ -330,10 +341,14 @@ class DiffusionTrainer:
                     
                     checkpoint_path = checkpoints_dir / f"checkpoint_step_{current_step}.pth"
                     torch.save(checkpoint_data, checkpoint_path)
-                    
+
+                    # Log artifacts to wandb
                     if self.wandb_run:
                         artifact = wandb.Artifact(f'checkpoint-{current_step}', type='model')
                         artifact.add_file(str(checkpoint_path))
+                        artifact.add_file(save_path + "_main")
+                        if self.model.ema_model is not None:
+                            artifact.add_file(save_path + "_ema")
                         self.wandb_run.log_artifact(artifact)
                     
                     # Keep only last 5 checkpoints
@@ -343,9 +358,9 @@ class DiffusionTrainer:
                             old_ckpt.unlink()
         
         # Final saves
-        final_model_dir = models_dir / "final_model"
-        self.model.save_pretrained(str(final_model_dir))
-        
+        final_save_path = str(models_dir / "final_model")  # Ensure "final_model" is appended to the directory
+        self.model.save_pretrained(final_save_path)
+
         metrics = {
             'training_losses': losses,
             'test_losses': test_losses,
@@ -367,9 +382,9 @@ class DiffusionTrainer:
             })
             
             final_artifact = wandb.Artifact('final_model', type='model')
-            final_artifact.add_file(str(final_model_dir) + "_main")
+            final_artifact.add_file(str(final_save_path) + "_main")
             if self.model.ema_model is not None:
-                final_artifact.add_file(str(final_model_dir) + "_ema")
+                final_artifact.add_file(str(final_save_path) + "_ema")
             self.wandb_run.log_artifact(final_artifact)
             self.wandb_run.finish()
         
