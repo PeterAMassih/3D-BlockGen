@@ -10,7 +10,8 @@ def create_model_and_trainer(
     resolution: int = 32,
     device: str = 'cuda',
     wandb_key: str = None,
-    project_name: str = "3D-BlockGen"
+    project_name: str = "3D-BlockGen",
+    run_name: str = None
 ) -> Tuple[DiffusionTrainer, DiffusionModel3D]:
     """Creates model and trainer with specified configuration."""
     
@@ -52,7 +53,8 @@ def create_model_and_trainer(
         voxel_config,
         device=device,
         wandb_key=wandb_key,
-        project_name=f"{project_name}"
+        project_name=f"{project_name}",
+        run_name=run_name
     )
     
     return trainer, diffusion_model

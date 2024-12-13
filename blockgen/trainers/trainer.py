@@ -18,12 +18,14 @@ class DiffusionTrainer:
                  device: str = 'cuda', 
                  initial_lr: float = 1e-4, 
                  wandb_key: str = None, 
-                 project_name: str = "3D-Blockgen"):
+                 project_name: str = "3D-Blockgen",
+                 run_name: str = None):
         self.model = model
         self.model.to(device)  # Explicit device placement
         self.config = config
         self.device = device
         self.initial_lr = initial_lr
+        self.run_name = run_name
         
         # Initialize text encoder
         self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
@@ -267,6 +269,7 @@ class DiffusionTrainer:
         if self.wandb_key and not self.wandb_run:
             self.wandb_run = wandb.init(
                 project=self.project_name,
+                name=self.run_name, 
                 config=training_config,
                 resume=True if checkpoint_path else False
             )

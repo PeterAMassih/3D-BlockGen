@@ -79,6 +79,7 @@ def main():
         device=train_params['device'],
         wandb_key=args.wandb_key,
         project_name=args.project_name,
+        run_name = f"{args.mode}_{args.stage}" if args.mode == 'two_stage' else f"{args.mode}"
     )
     
     # Start training
