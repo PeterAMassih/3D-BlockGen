@@ -38,10 +38,10 @@ def main():
     # Training parameters
     train_params = {
         'batch_size': 4,
-        'test_split': 0.0001, # We have 135560 3d objects * 4 augmentation 0.05 is 6778 so 128782 normal steps we use 129k
-        'total_steps': 100,
-        'save_every': 20,
-        'eval_every': 20,
+        'test_split': 0.05, # We have 135560 3d objects * 4 augmentation 0.05 is 6778 so 128782 normal steps we use 129k
+        'total_steps': 129_000,
+        'save_every': 10_000,
+        'eval_every': 10_000,
         'initial_lr': 1e-4,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }

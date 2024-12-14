@@ -57,7 +57,7 @@ class DiffusionTrainer:
             assert model_output.shape[1] == 3, "Color stage should predict RGB noise only"
             assert noisy_sample.shape[1] == 4, "Color stage input should be RGBA"
             assert target.shape[1] == 4, "Color stage target should be RGBA"
-
+    
         if isinstance(self.loss_fn, (ColorStageLoss, RGBALoss)):
             # For custom loss functions that require the diffusion model
             return self.loss_fn(
@@ -68,8 +68,13 @@ class DiffusionTrainer:
                 diffusion_model=self.model
             )
         else:
-            # For simple loss functions like MSELoss
-            return self.loss_fn(model_output, target)
+            # For simple loss functions like MSELoss in shape stage
+            # First predict the denoised sample
+            pred_original = self.model.predict_original_sample(
+                noisy_sample, model_output, timesteps
+            )
+            # Compare predicted clean sample with target
+            return self.loss_fn(pred_original, target)
             
     def evaluate(self, dataloader):
         self.model.eval()
@@ -100,7 +105,7 @@ class DiffusionTrainer:
                     timesteps,
                     encoder_hidden_states=encoder_hidden_states,
                     return_dict=True
-                ).sample
+                ).samplez
                 
                 loss = self.compute_loss(
                     model_output=predicted_noise,
@@ -137,7 +142,6 @@ class DiffusionTrainer:
             encoder_hidden_states = encoder_outputs.last_hidden_state
         
         noise = torch.randn_like(voxels)
-        print(noise.shape)
         timesteps = torch.randint(
             0, self.model.noise_scheduler.config.num_train_timesteps,
             (voxels.shape[0],), device=self.device

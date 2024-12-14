@@ -97,27 +97,27 @@ class DiffusionModel3D(nn.Module):
     def save_pretrained(self, save_path: str) -> None:
         """Save model and EMA model if enabled.
         
-        Adds stage suffix only for two-stage mode to distinguish shape/color models.
+        Args:
+            save_path: Base path for saving models. Will be appended with appropriate suffixes.
+                      e.g., 'path/to/model' becomes 'path/to/model_main' and 'path/to/model_ema'
         """
-        suffix = f"_{self.stage}" if self.mode == 'two_stage' else ""
-        self.model.save_pretrained(f"{save_path}{suffix}_main")
-        
+        # Just append _main and _ema without stage (stage is handled in directory structure)
+        self.model.save_pretrained(f"{save_path}_main")
         if self.ema_model is not None:
-            self.ema_model.save_pretrained(f"{save_path}{suffix}_ema")
+            self.ema_model.save_pretrained(f"{save_path}_ema")
 
     def load_pretrained(self, save_path: str, load_ema: bool = False) -> None:
         """Load model weights, optionally from EMA checkpoint.
         
-        Handles stage-specific paths for two-stage mode.
+        Args:
+            save_path: Base path for loading models. Will be appended with appropriate suffixes.
+            load_ema: Whether to load EMA weights.
         """
-        suffix = f"_{self.stage}" if self.mode == 'two_stage' else ""
-        
         if load_ema and self.ema_model is not None:
             self.ema_model = EMAModel.from_pretrained(
-                f"{save_path}{suffix}_ema",
+                f"{save_path}_ema",
                 model_cls=type(self.model)
             )
             self.ema_model.copy_to(self.model.parameters())
         else:
-            main_path = f"{save_path}{suffix}_main"
-            self.model = self.model.from_pretrained(main_path)
+            self.model = self.model.from_pretrained(f"{save_path}_main")

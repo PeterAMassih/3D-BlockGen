@@ -57,7 +57,7 @@ class VoxelTextDataset(Dataset):
                 if voxel_data.shape[0] > 1:
                     voxel_data = voxel_data[-1:]  # Take the last channel (occupancy)
                 # Output: [1, H, W, D] (binary occupancy)
-                print(voxel_data.shape)
+                # print(voxel_data.shape)
                 return (voxel_data > 0).float()
             elif self.config.stage == 'color':
                 # Color stage: Handle RGBA format
