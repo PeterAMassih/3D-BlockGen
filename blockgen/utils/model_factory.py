@@ -17,6 +17,7 @@ def create_model_and_trainer(
     
     # Create UNet model with channels from voxel config
     out_channels = getattr(voxel_config, 'out_channels', voxel_config.in_channels)
+    print(f"The number of input channels is: {voxel_config.in_channels}", f"The number of out channels is{out_channels}")
     model = UNet3DConditionModel(
         sample_size=resolution,
         in_channels=voxel_config.in_channels,

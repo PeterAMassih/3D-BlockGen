@@ -6,12 +6,15 @@ from blockgen.configs.diffusion_config import DiffusionConfig
 from blockgen.models.diffusion import DiffusionModel3D
 from blockgen.inference.inference import DiffusionInference3D
 
-def load_model_for_inference(model_path: str, voxel_config: VoxelConfig, diffusion_config: DiffusionConfig, device='cuda', ema=True, use_ddim=False):
+def load_model_for_inference(model_path: str, voxel_config: VoxelConfig, diffusion_config: DiffusionConfig, device='cuda', ema=True):
     """Load model for inference."""
+    
+    out_channels = getattr(voxel_config, 'out_channels', voxel_config.in_channels)
+    print(f"The number of input channels is: {voxel_config.in_channels}", f"The number of out channels is{out_channels}")
     model = UNet3DConditionModel(
         sample_size=32,
         in_channels=voxel_config.in_channels,
-        out_channels=voxel_config.in_channels,
+        out_channels=out_channels,
         layers_per_block=2,
         block_out_channels=(64, 128, 256, 512),
         down_block_types=(
@@ -28,8 +31,9 @@ def load_model_for_inference(model_path: str, voxel_config: VoxelConfig, diffusi
         ),
         cross_attention_dim=512,
     ).to(device)
+    print(f"Total parameters: {sum(p.numel() for p in model.parameters())}")
 
-    diffusion_model = DiffusionModel3D(model, config=diffusion_config, use_ddim=use_ddim)
+    diffusion_model = DiffusionModel3D(model, config=diffusion_config)
     
     if ema:
         diffusion_model.load_pretrained(model_path, load_ema=True)

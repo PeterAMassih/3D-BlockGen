@@ -121,7 +121,7 @@ class DiffusionInference3D:
             do_class_guidance = guidance_scale > 1.0
             
             # Initialize noise with correct shape: [B, C, H, W, D]
-            num_channels = 4 if self.config.use_rgb else 1
+            num_channels = self.config.in_channels
             noise = torch.randn(num_samples, num_channels, *image_size).to(self.device)
             
             # Encode prompts
@@ -209,7 +209,7 @@ class DiffusionInference3D:
         with torch.no_grad():
             do_class_guidance = guidance_scale > 1.0
             
-            num_channels = 4 if self.config.use_rgb else 1
+            num_channels = self.config.in_channels
             sample = torch.randn(num_samples, num_channels, *image_size).to(self.device)
             
             encoder_hidden_states = self.encode_prompt([prompt] * num_samples)
@@ -267,7 +267,7 @@ class DiffusionInference3D:
             axs = axs.reshape(-1, 1)
         
         for i, sample in enumerate(samples_):  # sample shape: [C, H, W, D]
-            if self.config.use_rgb:
+            if self.config.in_channels > 1:
                 # Print statistics
                 if threshold is None:
                     adaptive_threshold = np.percentile(sample[3], 90)
@@ -341,7 +341,7 @@ class DiffusionInference3D:
             ax.view_init(elev=30, azim=45)
             ax.set_title("3D View")
             ax.set_box_aspect([1, 1, 1])
-            shape = occupancy.shape if self.config.use_rgb else binary_sample.shape
+            shape = occupancy.shape if self.config.in_channels > 1 else binary_sample.shape
             ax.set_xlim(0, shape[0])
             ax.set_ylim(0, shape[1])
             ax.set_zlim(0, shape[2])
@@ -487,44 +487,3 @@ class DiffusionInference3D:
             verts_colors=vertex_colors,
             colors_as_uint8=False  # Colors will be saved as floats in [0,1]
         )
-            
-
-def visualize_tensor(tensor: torch.Tensor, config, threshold=0.5) -> None:
-    if config.use_rgb and (tensor.dim() != 5 or tensor.shape[0] != 1 or tensor.shape[1] != 4):
-        raise ValueError("Expected RGBA tensor shape: (1, 4, resolution, resolution, resolution)")
-    elif not config.use_rgb and (tensor.dim() != 5 or tensor.shape[0] != 1 or tensor.shape[1] != 1):
-        raise ValueError("Expected occupancy tensor shape: (1, 1, resolution, resolution, resolution)")
-
-    voxel_grid = tensor.squeeze().cpu().numpy()
-    
-    if config.use_rgb:
-        binary_grid = (voxel_grid[3] > threshold).astype(bool)
-        colors = np.zeros((*binary_grid.shape, 4))
-        colors[binary_grid] = np.array([*voxel_grid[:3, binary_grid], 1]).T
-    else:
-        binary_grid = (voxel_grid > threshold).astype(np.float32)
-        colors = None
-
-    fig = plt.figure(figsize=(12, 4))
-    
-    ax1 = fig.add_subplot(121)
-    if config.use_rgb:
-        rgb_slice = np.moveaxis(voxel_grid[:3, :, :, voxel_grid.shape[2]//2], 0, -1)
-        alpha_slice = voxel_grid[3, :, :, voxel_grid.shape[2]//2] > threshold
-        slice_img = np.zeros((*rgb_slice.shape[:-1], 4))
-        slice_img[alpha_slice] = np.array([*rgb_slice[alpha_slice].T, 1]).T
-        ax1.imshow(slice_img)
-    else:
-        ax1.imshow(binary_grid[:, :, voxel_grid.shape[2]//2], cmap="gray")
-    ax1.set_title("Center Slice")
-    ax1.axis("off")
-
-    ax2 = fig.add_subplot(122, projection='3d')
-    if config.use_rgb:
-        ax2.voxels(binary_grid, facecolors=colors, edgecolor='k')
-    else:
-        ax2.voxels(binary_grid, edgecolor='k')
-    ax2.set_title("3D Visualization")
-
-    plt.tight_layout()
-    plt.show()

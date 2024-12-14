@@ -52,9 +52,11 @@ class DiffusionTrainer:
         Returns:
             Computed loss
         """
-        assert model_output.shape[1] == 3, "Color stage should predict RGB noise only"
-        assert noisy_sample.shape[1] == 4, "Color stage input should be RGBA"
-        assert target.shape[1] == 4, "Color stage target should be RGBA"
+        # Only do shape checks for color stage
+        if self.config.mode == 'two_stage' and self.config.stage == 'color':
+            assert model_output.shape[1] == 3, "Color stage should predict RGB noise only"
+            assert noisy_sample.shape[1] == 4, "Color stage input should be RGBA"
+            assert target.shape[1] == 4, "Color stage target should be RGBA"
 
         if isinstance(self.loss_fn, (ColorStageLoss, RGBALoss)):
             # For custom loss functions that require the diffusion model
@@ -68,13 +70,7 @@ class DiffusionTrainer:
         else:
             # For simple loss functions like MSELoss
             return self.loss_fn(model_output, target)
-    
-    def _get_model_save_path(self, base_dir: str, step: int = None) -> str:
-        """Constructs save path for model checkpoint directories."""
-        suffix = f"_{self.model.stage}" if self.model.mode == 'two_stage' else ""
-        step_suffix = f"_step_{step}" if step is not None else ""
-        return f"{base_dir}{suffix}{step_suffix}"
-    
+            
     def evaluate(self, dataloader):
         self.model.eval()
         total_loss = 0.0
@@ -141,6 +137,7 @@ class DiffusionTrainer:
             encoder_hidden_states = encoder_outputs.last_hidden_state
         
         noise = torch.randn_like(voxels)
+        print(noise.shape)
         timesteps = torch.randint(
             0, self.model.noise_scheduler.config.num_train_timesteps,
             (voxels.shape[0],), device=self.device
@@ -190,7 +187,7 @@ class DiffusionTrainer:
         save_dir = Path(save_dir)
         if self.config.mode == 'two_stage':
             save_dir = save_dir / self.config.stage
-            
+                    
         checkpoints_dir = save_dir / "checkpoints"
         models_dir = save_dir / "models"
         best_model_dir = save_dir / "best_model"
@@ -217,15 +214,15 @@ class DiffusionTrainer:
         # Load checkpoint if provided
         if checkpoint_path is not None:
             print(f"Resuming training from checkpoint: {checkpoint_path}")
+            checkpoint_path = Path(checkpoint_path)
             
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
             
             checkpoint = torch.load(checkpoint_path)
-            checkpoint_dir = Path(checkpoint_path).parent.parent
-            last_save_step = (checkpoint['step'] // save_every) * save_every
-            model_path = checkpoint_dir / 'models' / f"model_step_{last_save_step}"
+            last_step = (checkpoint['step'] // save_every) * save_every
+            model_path = models_dir / f"model_step_{last_step}"
             
             self.model.load_pretrained(str(model_path))
             self.model.to(self.device)
@@ -237,9 +234,7 @@ class DiffusionTrainer:
             losses = checkpoint.get('training_losses', [])
             test_losses = checkpoint.get('test_losses', [])
             lr_history = checkpoint.get('lr_history', [])
-            
-            print(f"Resumed at step {current_step} with best test loss: {best_test_loss:.4f}")
-        
+                
         # Create/update scheduler
         remaining_steps = total_steps - current_step
         scheduler = CosineAnnealingLR(optimizer, T_max=remaining_steps, eta_min=1e-6)
@@ -299,12 +294,20 @@ class DiffusionTrainer:
                     'loss': f"{loss:.4f}",
                     'lr': f"{current_lr:.6f}"
                 })
-                
-                # Evaluation
+
                 if current_step % eval_every == 0:
                     test_loss = self.evaluate(test_dataloader)
                     test_losses.append(test_loss)
-                    
+    
+                    # Update best test loss if new best found
+                    if test_loss < best_test_loss:
+                            best_test_loss = test_loss
+                            self.model.save_pretrained(str(best_model_dir / "model"))
+                            if self.wandb_run:
+                                self.wandb_run.summary['best_test_loss'] = best_test_loss
+                                self.wandb_run.summary['best_model_step'] = current_step
+                            print(f"\nNew best model saved with Test Loss: {test_loss:.4f}")
+                        
                     metrics = {
                         'training_losses': losses,
                         'test_losses': test_losses,
@@ -313,27 +316,18 @@ class DiffusionTrainer:
                         'current_step': current_step,
                         'best_test_loss': best_test_loss
                     }
-                    
+                        
                     with open(save_dir / "metrics.json", 'w') as f:
                         json.dump(metrics, f)
-                    
-                    if test_loss < best_test_loss:
-                        best_test_loss = test_loss
-                        self.model.save_pretrained(str(best_model_dir / "best_model"))
-                        if self.wandb_run:
-                            self.wandb_run.summary['best_test_loss'] = best_test_loss
-                            self.wandb_run.summary['best_model_step'] = current_step
-                        print(f"\nNew best model saved with Test Loss: {test_loss:.4f}")
                 
-                # Regular checkpoints
+                # Evaluation
                 if current_step % save_every == 0:
-                    # Determine the base save path for the step
-                    save_path = self._get_model_save_path(str(models_dir), step=current_step)
-                    
-                    # Save the model and optionally the EMA model
-                    self.model.save_pretrained(save_path)
+                    # Save model first
+                    model_path = models_dir / f"model_step_{current_step}"
+                    self.model.save_pretrained(str(model_path))
                     
                     # Save checkpoint data
+                    checkpoint_path = checkpoints_dir / f"checkpoint_step_{current_step}.pth"
                     checkpoint_data = {
                         'step': current_step,
                         'optimizer_state_dict': optimizer.state_dict(),
@@ -345,29 +339,34 @@ class DiffusionTrainer:
                         'test_losses': test_losses,
                         'lr_history': lr_history
                     }
-                    
-                    checkpoint_path = checkpoints_dir / f"checkpoint_step_{current_step}.pth"
                     torch.save(checkpoint_data, checkpoint_path)
-
-                    # Log artifacts to wandb
+                
+                    # Only add to wandb if files exist
                     if self.wandb_run:
                         artifact = wandb.Artifact(f'checkpoint-{current_step}', type='model')
-                        artifact.add_file(str(checkpoint_path))
-                        artifact.add_file(save_path + "_main")
-                        if self.model.ema_model is not None:
-                            artifact.add_file(save_path + "_ema")
+                        if checkpoint_path.exists():
+                            artifact.add_file(str(checkpoint_path))
+                        
+                        model_main_dir = models_dir / f"model_step_{current_step}_main"
+                        model_ema_dir = models_dir / f"model_step_{current_step}_ema"
+                        
+                        # Add directories with namespaces to avoid conflicts
+                        if model_main_dir.exists():
+                            artifact.add_dir(str(model_main_dir), name='model_main')
+                        if self.model.ema_model is not None and model_ema_dir.exists():
+                            artifact.add_dir(str(model_ema_dir), name='model_ema')
                         self.wandb_run.log_artifact(artifact)
-                    
-                    # Keep only last 5 checkpoints
-                    checkpoint_files = sorted(checkpoints_dir.glob("checkpoint_step_*.pth"))
-                    if len(checkpoint_files) > 5:
-                        for old_ckpt in checkpoint_files[:-5]:
-                            old_ckpt.unlink()
+                
+                # Regular checkpoints cleanup
+                checkpoint_files = sorted(checkpoints_dir.glob("checkpoint_step_*.pth"))
+                if len(checkpoint_files) > 5:
+                    for old_ckpt in checkpoint_files[:-5]:
+                        old_ckpt.unlink()
         
         # Final saves
-        final_save_path = str(models_dir / "final_model")  # Ensure "final_model" is appended to the directory
-        self.model.save_pretrained(final_save_path)
-
+        final_model_path = models_dir / "final_model"
+        self.model.save_pretrained(str(final_model_path))
+        
         metrics = {
             'training_losses': losses,
             'test_losses': test_losses,
@@ -389,9 +388,13 @@ class DiffusionTrainer:
             })
             
             final_artifact = wandb.Artifact('final_model', type='model')
-            final_artifact.add_file(str(final_save_path) + "_main")
-            if self.model.ema_model is not None:
-                final_artifact.add_file(str(final_save_path) + "_ema")
+            final_model_main_dir = models_dir / "final_model_main"
+            final_model_ema_dir = models_dir / "final_model_ema"
+            
+            if final_model_main_dir.exists():
+                final_artifact.add_dir(str(final_model_main_dir), name='model_main')
+            if self.model.ema_model is not None and final_model_ema_dir.exists():
+                final_artifact.add_dir(str(final_model_ema_dir), name='model_ema')
             self.wandb_run.log_artifact(final_artifact)
             self.wandb_run.finish()
         
