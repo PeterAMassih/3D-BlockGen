@@ -10,10 +10,11 @@ def create_dataloaders(
     config_voxel: VoxelConfig,
     batch_size: int = 32,
     test_split: float = 0.05,
-    num_workers: int = 4
+    num_workers: int = 4,
+    use_label_mapping: bool = False
 ) -> Tuple[DataLoader, DataLoader]:
     """Create train and test dataloaders"""
-    dataset = VoxelTextDataset(voxel_dir, annotation_file, config_voxel)
+    dataset = VoxelTextDataset(voxel_dir, annotation_file, config_voxel, use_label_mapping)
     
     train_size = int((1 - test_split) * len(dataset))
     test_size = len(dataset) - train_size

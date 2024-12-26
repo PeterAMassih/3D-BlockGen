@@ -13,7 +13,7 @@ This project explores the use of diffusion models to automatically generate 3D b
 
 ## Architecture
 
-The project implements a two-stage diffusion model:
+The project implements a two-stage diffusion model (and other architecture but this is the one with the better results):
 
 1. **Shape Stage**: 
    - Input: Text prompt
