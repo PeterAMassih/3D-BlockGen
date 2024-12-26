@@ -105,7 +105,7 @@ class DiffusionTrainer:
                     timesteps,
                     encoder_hidden_states=encoder_hidden_states,
                     return_dict=True
-                ).samplez
+                ).sample
                 
                 loss = self.compute_loss(
                     model_output=predicted_noise,

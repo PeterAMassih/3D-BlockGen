@@ -196,8 +196,8 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32):
         logger.info(f"Failed: {failed_count}")
 
 if __name__ == "__main__":
-    input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data"
-    output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/objaverse_data_voxelized"
+    input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/finetune"
+    output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/finetune_voxelized"
     
     try:
         process_dataset(
