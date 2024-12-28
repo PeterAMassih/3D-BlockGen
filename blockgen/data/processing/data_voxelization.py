@@ -222,7 +222,7 @@ class VoxelizerWithAugmentation:
             # Create the base tensor based on colors existence
             base_tensor = self._create_color_tensor(indices, colors)
             augmented = self._create_augmentations(base_tensor)
-            results = [base_tensor] + augmented
+            results = [base_tensor] # + augmented
             
             if visualize:
                 self.visualize_results(results, mesh_path)

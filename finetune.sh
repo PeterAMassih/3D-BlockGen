@@ -11,7 +11,7 @@ pip install --no-deps --no-index --no-cache-dir pytorch3d -f https://dl.fbaipubl
 echo "Running finetune.py..."
 python scripts/finetune.py \
     --wandb_key 67c58b45890c274b89d401e46da195e6071b6872 \
-    --project_name "3D-Blockgen-Finetune" \
+    --project_name "3D-Blockgen" \
     --data_dir objaverse_finetune_voxelized \
     --label_mapping objaverse_finetune/file_to_label_map.json \
     --save_dir runs/finetune \

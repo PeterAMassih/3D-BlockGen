@@ -351,29 +351,27 @@ class DiffusionInference3D:
     
     def visualize_samples_p3d(self, sample, threshold=0.5):
         device = "cuda"
-        # Voxel grid parameters
-        voxel_grid = sample
-        sample_ = sample.cpu().numpy()
-
-        # hist, bins = np.histogram(sample_[3], bins=10)
-        # print(f"\nSample {0} distribution:")
-        # print(f"Histogram bins: {bins}")
-        # print(f"Histogram counts: {hist}")
-        # print(f"Percentiles: 10%: {np.percentile(sample_[3], 10):.3f}, "
-        #       f"50%: {np.percentile(sample_[3], 50):.3f}, "
-        #       f"90%: {np.percentile(sample_[3], 90):.3f}")
+        # Handle both single-channel and RGBA inputs
+        if sample.shape[0] == 1:  # Single channel case
+            # Create an RGBA tensor with default gray color
+            rgba_sample = torch.zeros((4, *sample.shape[1:]), device=sample.device)
+            rgba_sample[0] = 0  # R
+            rgba_sample[1] = 0  # G
+            rgba_sample[2] = 0  # B
+            rgba_sample[3] = sample[0]  # Use input as alpha/occupancy
+            voxel_grid = rgba_sample
+        else:  # RGBA case (4 channels)
+            voxel_grid = sample
+            
+        sample_ = voxel_grid.cpu().numpy()
         
-        # print(f"RG range: [{sample_[0:3].min():.3f}, {sample_[0:3].max():.3f}]")
-        # print(f"Alpha range: [{sample_[3].min():.3f}, {sample_[3].max():.3f}]")
-        
-        
-        # Extract non-zero voxels
-        binary_sample = (sample[3] > threshold)
+        # Extract non-zero voxels using alpha/occupancy channel
+        binary_sample = (voxel_grid[3] > threshold)
         indices = torch.nonzero(binary_sample, as_tuple=False)
         vertices = indices.float()  # Convert voxel indices to vertices
         
         cube_faces = torch.tensor([
-            [0, 1, 2], [0, 2, 3], #[0, 2, 1], [0, 3, 2],  # Bottom face
+            [0, 1, 2], [0, 2, 3],  # Bottom face
             [4, 5, 6], [4, 6, 7], [4, 6, 5], [4, 7, 6],  # Top face
             [0, 1, 5], [0, 5, 4], [0, 5, 1], [0, 4, 5],  # Side faces
             [2, 3, 7], [2, 7, 6], [2, 7, 3], [2, 6, 7],
@@ -386,36 +384,37 @@ class DiffusionInference3D:
             [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # Bottom face
             [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]   # Top face
         ], dtype=torch.float32, device=device)
-
-        cube_vertices = 0.95*cube_vertices
+    
+        cube_vertices = 0.95 * cube_vertices
         
         all_vertices = []
         all_colors = []
         all_faces = []
         
         for idx, voxel in enumerate(indices):
-            # Translate cube vertices to voxel position
-        
+            # Get color from voxel grid
             color = torch.stack([voxel_grid[0:3, voxel[0], voxel[1], voxel[2]]]*8)
             voxel_vertices = cube_vertices + voxel  # Add voxel position to cube vertices
             all_vertices.append(voxel_vertices)
             all_colors.append(color)
-        
+            
             # Offset cube faces by the current number of vertices
             offset = idx * 8  # 8 vertices per voxel
             all_faces.append(cube_faces + offset)
+        
+        if not all_vertices:  # Handle empty case
+            print("No vertices found - model may be empty or threshold too high")
+            return
         
         # Combine all vertices and faces
         vertices = torch.cat(all_vertices, dim=0)
         faces = torch.cat(all_faces, dim=0)
         colors = torch.cat(all_colors, dim=0)
         
-        # Deduplicate vertices and remap faces
-        #unique_vertices, inverse_indices = torch.unique(vertices, dim=0, return_inverse=True)
-        #faces = inverse_indices[faces]
+        # Use vertices directly without deduplication for simplicity
         unique_vertices = vertices
         
-        # Debugging step
+        # Debugging info
         print(f"Number of vertices: {len(unique_vertices)}")
         print(f"Max face index: {faces.max()}")
         print(f"Number of faces: {faces.size(0)}")
@@ -429,12 +428,9 @@ class DiffusionInference3D:
         # Define the object's center
         object_center = unique_vertices.mean(dim=0)
         
-        # Generate a random camera position in spherical coordinates
-        radius = 60.0  # Distance from the object
-        theta = torch.rand(1) * 2 * torch.pi  # Azimuthal angle
-        phi =  torch.rand(1) * torch.pi  # Polar angle
-        #print(theta, phi)
-        theta, phi = torch.tensor([5.6699]), torch.tensor([1.5873])
+        # Set camera position (using fixed values for consistency)
+        radius = 60.0  # Distance from object
+        theta, phi = torch.tensor([5.6699]), torch.tensor([1.5873])  # Fixed angles
         
         # Convert spherical coordinates to Cartesian
         camera_position = torch.tensor([
@@ -449,27 +445,23 @@ class DiffusionInference3D:
         # Update the camera
         cameras = FoVPerspectiveCameras(device=device, R=R, T=T)
         
-        # Define a color for each vertex (e.g., all white or random colors)
-        vertex_colors = colors#torch.rand_like(unique_vertices)
-        # Alternatively, use random colors:
-        # vertex_colors = torch.rand_like(unique_vertices)
-        
-        # Create vertex-based textures
-        textures = TexturesVertex(verts_features=[vertex_colors])
+        # Create vertex textures
+        textures = TexturesVertex(verts_features=[colors])
         
         # Create the mesh object with textures
         mesh = Meshes(verts=[unique_vertices], faces=[faces], textures=textures)
         
-        # Renderer settings (unchanged)
+        # Renderer settings
         raster_settings = RasterizationSettings(image_size=256, blur_radius=0.0, faces_per_pixel=1)
         
+        # Lighting setup
+        lights = PointLights(device=device, location=[[0.0, 100.0, 100.0]])
         
-        lights = PointLights(device=device, location=[[0.0, 100.0, 100.0]])  # Place a light in front of the object
+        # Create renderer
         renderer = MeshRenderer(
             rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
             shader=HardPhongShader(device=device, cameras=cameras, lights=lights)
         )
-        
         
         # Render the image
         images = renderer(mesh)
@@ -479,11 +471,12 @@ class DiffusionInference3D:
         plt.imshow(image)
         plt.axis('off')
         plt.show()
-
+    
+        # Save the mesh as PLY
         save_ply_with_colors(
             "generated.ply",
             verts=unique_vertices,
             faces=faces,
-            verts_colors=vertex_colors,
+            verts_colors=colors,
             colors_as_uint8=False  # Colors will be saved as floats in [0,1]
         )

@@ -226,7 +226,7 @@ class DiffusionTrainer:
             
             checkpoint = torch.load(checkpoint_path)
             last_step = (checkpoint['step'] // save_every) * save_every
-            model_path = models_dir / f"model_step_{last_step}"
+            model_path = checkpoint_path.parent.parent/"models"/f"model_step_{last_step}"
             
             self.model.load_pretrained(str(model_path))
             self.model.to(self.device)
@@ -253,7 +253,7 @@ class DiffusionTrainer:
             'initial_lr': self.initial_lr,
             'device': str(self.device),
             'start_time': time.strftime("%Y%m%d-%H%M%S"),
-            'resume_checkpoint': checkpoint_path,
+            'resume_checkpoint': str(checkpoint_path) if checkpoint_path else None,
             'starting_step': starting_step,
             'mode': self.config.mode,
             'stage': self.config.get_stage(),  # Use helper method
@@ -270,7 +270,7 @@ class DiffusionTrainer:
                 project=self.project_name,
                 name=self.run_name, 
                 config=training_config,
-                resume=True if checkpoint_path else False
+                #resume=True if checkpoint_path else False
             )
         
         # Main training loop

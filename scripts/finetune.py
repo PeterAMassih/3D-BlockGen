@@ -43,7 +43,7 @@ def main():
     train_params = {
         'batch_size': 4,
         'test_split': 0.1,  # Larger test split for finetuning
-        'total_steps': 20_000,  # Fewer steps for finetuning
+        'total_steps': 135_000,  # Fewer steps for finetuning
         'save_every': 1_000,
         'eval_every': 1_000,
         'initial_lr': 1e-5,  # Lower learning rate for finetuning

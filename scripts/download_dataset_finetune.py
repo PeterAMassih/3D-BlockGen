@@ -1,6 +1,7 @@
 import objaverse
 import os
 import json
+import shutil
 
 def main():
     # Step 1: Load LVIS annotations
@@ -26,31 +27,40 @@ def main():
 
     print(f"Found {len(uids_to_download)} objects to download.")
 
-    # Step 4: Download GLB files
-    output_dir = "./downloaded_objects"
+    # Step 4: Prepare output directory
+    output_dir = "./objaverse_finetune"
     os.makedirs(output_dir, exist_ok=True)
 
-    print("Downloading objects...")
-    objects = objaverse.load_objects(uids=uids_to_download, download_processes=os.cpu_count())
-
-    # Step 5: Save the files locally and create a file-to-label mapping
+    # Initialize mapping dictionary
     file_to_label_map = {}
-    for label, uids in label_to_uid_map.items():
-        for uid in uids:
-            if uid in objects:
-                filepath = objects[uid]
-                filename = f"{uid}.glb"
-                new_filepath = os.path.join(output_dir, filename)
-                os.rename(filepath, new_filepath)
+
+    # Step 5: Download objects in batches
+    batch_size = 1000
+    total_objects = len(uids_to_download)
+
+    for i in range(0, total_objects, batch_size):
+        batch_uids = uids_to_download[i:i + batch_size]
+        print(f"Downloading batch {i // batch_size + 1} containing {len(batch_uids)} objects...")
+
+        # Download the current batch of objects
+        objects = objaverse.load_objects(uids=batch_uids, download_processes=os.cpu_count())
+
+        # Move downloaded files and update mapping
+        for uid, filepath in objects.items():
+            filename = f"{uid}.glb"
+            new_filepath = os.path.join(output_dir, filename)
+            shutil.move(filepath, new_filepath)  # Move file to output directory
+            label = next((key for key, value in label_to_uid_map.items() if uid in value), None)
+            if label:
                 file_to_label_map[filename] = label
 
-    # Save the mapping as a JSON file
-    mapping_file = os.path.join(output_dir, "file_to_label_map.json")
-    with open(mapping_file, "w") as f:
-        json.dump(file_to_label_map, f, indent=4)
+        # Save the mapping file after each batch
+        mapping_file = os.path.join(output_dir, "file_to_label_map.json")
+        with open(mapping_file, "w") as f:
+            json.dump(file_to_label_map, f, indent=4)
+        print(f"Mapping file saved to '{mapping_file}'.")
 
-    print(f"Downloaded {len(objects)} objects.")
-    print(f"File-to-label mapping saved to '{mapping_file}'.")
+    print(f"Downloaded and processed {len(file_to_label_map)} objects in total.")
 
 if __name__ == '__main__':
     main()

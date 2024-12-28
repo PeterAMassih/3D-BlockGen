@@ -14,7 +14,7 @@ def parse_args():
     parser.add_argument('--data_dir', type=str, default='objaverse_data_voxelized', help='Directory containing voxel data')
     parser.add_argument('--annotation_file', type=str, default='objaverse_data/annotations.json', 
                        help='Path to annotations file')
-    parser.add_argument('--save_dir', type=str, default='runs/experiment_two_stage_shape', help='Directory to save outputs')
+    parser.add_argument('--save_dir', type=str, default='runs/experiment_two_stage', help='Directory to save outputs')
     parser.add_argument('--checkpoint_path', type=str, default=None, help='Path to checkpoint for resuming training')
     parser.add_argument('--mode', type=str, choices=['occupancy_only', 'rgba_combined', 'two_stage'], default='two_stage',
                        help='Training mode')
