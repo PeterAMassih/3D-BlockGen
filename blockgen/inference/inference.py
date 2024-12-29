@@ -91,12 +91,20 @@ def save_ply_with_colors(
         )
 
 class DiffusionInference3D:
-    def __init__(self, model, noise_scheduler, config, device='cuda'):
+    def __init__(self, model, noise_scheduler, config, device='cuda', 
+             color_model=None, color_noise_scheduler=None, color_config=None):
+        """Initialize with optional color model for two-stage generation."""
         self.model = model.to(device)
         self.noise_scheduler = noise_scheduler
-        self.config = config  # VoxelConfig object
+        self.config = config
         self.device = device
-        # Add text encoder for conditioning
+        
+        # Add color model components (optional)
+        self.color_model = color_model.to(device) if color_model is not None else None
+        self.color_noise_scheduler = color_noise_scheduler
+        self.color_config = color_config
+        
+        # Initialize text encoder (used for both stages)
         self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
         self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
         self.text_encoder.eval()
@@ -146,34 +154,17 @@ class DiffusionInference3D:
                 sample = noise
             
             for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps)):
-                # Function to get prediction with rotations
-                def get_prediction_with_rotations(input_sample, states):
-                    # Original orientation
-                    pred1 = self.model(input_sample, t, encoder_hidden_states=states).sample
-    
-                    # First rotation: [B, C, H, W, D] -> [B, C, D, H, W]
-                    sample_rot1 = input_sample.permute(0, 1, 4, 2, 3)
-                    pred2 = self.model(sample_rot1, t, encoder_hidden_states=states).sample
-                    pred2 = pred2.permute(0, 1, 3, 4, 2)  # Back to [B, C, H, W, D]
-    
-                    # Second rotation: [B, C, H, W, D] -> [B, C, W, D, H]
-                    sample_rot2 = input_sample.permute(0, 1, 3, 4, 2)
-                    pred3 = self.model(sample_rot2, t, encoder_hidden_states=states).sample
-                    pred3 = pred3.permute(0, 1, 4, 2, 3)  # Back to [B, C, H, W, D]
-    
-                    # Average predictions
-                    return (pred1 + pred2 + pred3) / 3.0
-    
+
                 # Get conditioned prediction
                 if use_rotations:
-                    residual = get_prediction_with_rotations(sample, encoder_hidden_states)
+                    residual = self._get_prediction_with_rotations(sample, t, encoder_hidden_states, self.model)
                 else:
                     residual = self.model(sample, t, encoder_hidden_states=encoder_hidden_states).sample
     
                 # Apply classifier guidance if needed
                 if do_class_guidance:
                     if use_rotations:
-                        residual_uncond = get_prediction_with_rotations(sample, encoder_hidden_states_uncond)
+                        residual_uncond = self._get_prediction_with_rotations(sample, t, encoder_hidden_states_uncond, self.model)
                     else:
                         residual_uncond = self.model(
                             sample,
@@ -204,6 +195,127 @@ class DiffusionInference3D:
                 sample = self.noise_scheduler.step(residual, t, sample).prev_sample
                 
             return sample
+    def sample_two_stage(self, prompt, num_samples=8, image_size=(32, 32, 32), 
+                    show_intermediate=False, guidance_scale=7.0, 
+                    color_guidance_scale=7.0, use_rotations=True, use_mean_init=False):
+        """
+        Two-stage generation: first shape, then color.
+        
+        Args:
+            prompt: Text prompt for conditioning
+            num_samples: Number of samples to generate
+            image_size: Voxel grid size (H, W, D)
+            show_intermediate: Show intermediate denoising steps
+            guidance_scale: Guidance scale for shape generation
+            color_guidance_scale: Guidance scale for color generation
+            use_rotations: Whether to use rotation augmentation
+            use_mean_init: Whether to initialize with mean noise
+        """
+        if self.color_model is None:
+            raise ValueError("Color model and scheduler required for two-stage sampling")
+
+        with torch.no_grad():
+            # Stage 1: Generate shapes
+            print("Stage 1: Generating shapes...")
+            
+            # Use existing sample method with shape model
+            shape_samples = self.sample(
+                prompt=prompt,
+                num_samples=num_samples,
+                image_size=image_size,
+                show_intermediate=show_intermediate,
+                guidance_scale=guidance_scale,
+                use_rotations=use_rotations,
+                use_mean_init=use_mean_init
+            )
+            
+            # Convert to binary occupancy mask
+            shape_occupancy = (shape_samples > 0.5).float()
+            
+            # Stage 2: Generate colors with occupancy mask
+            print("\nStage 2: Adding colors...")
+            
+            # Initialize with noise for RGB and clean occupancy mask
+            noise = torch.randn(num_samples, 4, *image_size).to(self.device)
+            if use_mean_init:
+                # Initialize all channels to 0.5 and then mask with shape
+                mean_data = 0.5 * torch.ones_like(noise)
+                # Only keep color values where we have shape
+                mean_data = mean_data * shape_occupancy  # This will zero out RGB where alpha=0
+                noise = mean_data
+            noise[:, 3:] = shape_occupancy  # Replace alpha channel with shape
+            
+            # Get text embeddings for color stage
+            encoder_hidden_states = self.encode_prompt([prompt] * num_samples)
+            if color_guidance_scale > 1.0:
+                encoder_hidden_states_uncond = self.encode_prompt([""] * num_samples)
+            
+            # Setup color stage sampling
+            timesteps = self.color_noise_scheduler.timesteps.to(self.device)
+            sample = noise
+            
+            # Color denoising loop
+            for t in tqdm(timesteps, desc="Color Sampling"):
+                # Get noise prediction
+                if use_rotations:
+                    residual = self._get_prediction_with_rotations(
+                        sample=sample,
+                        t=t,
+                        encoder_hidden_states=encoder_hidden_states,
+                        model=self.color_model
+                    )
+                    if color_guidance_scale > 1.0:
+                        residual_uncond = self._get_prediction_with_rotations(
+                            sample=sample,
+                            t=t,
+                            encoder_hidden_states=encoder_hidden_states_uncond,
+                            model=self.color_model
+                        )
+                else:
+                    residual = self.color_model(
+                        sample, t, encoder_hidden_states=encoder_hidden_states
+                    ).sample
+                    if color_guidance_scale > 1.0:
+                        residual_uncond = self.color_model(
+                            sample, t, encoder_hidden_states=encoder_hidden_states_uncond
+                        ).sample
+                
+                # Apply guidance if needed
+                if color_guidance_scale > 1.0:
+                    residual = residual_uncond + color_guidance_scale * (
+                        residual - residual_uncond
+                    )
+                
+                # Denoise step
+                sample = self.color_noise_scheduler.step(residual, t, sample).prev_sample
+                
+                # Keep occupancy mask clean
+                sample[:, 3:] = shape_occupancy
+                
+                # Show intermediate results if requested
+                if show_intermediate and t % 50 == 49:
+                    print(f"\nColor timestep: {t}")
+                    self.visualize_samples(sample, threshold=0.5)
+            
+            return sample
+
+    def _get_prediction_with_rotations(self, sample, t, encoder_hidden_states, model):
+        """Helper for rotation augmented prediction with specified model."""
+        # Original orientation
+        pred1 = model(sample, t, encoder_hidden_states=encoder_hidden_states).sample
+        
+        # First rotation: [B, C, H, W, D] -> [B, C, D, H, W]
+        sample_rot1 = sample.permute(0, 1, 4, 2, 3)
+        pred2 = model(sample_rot1, t, encoder_hidden_states=encoder_hidden_states).sample
+        pred2 = pred2.permute(0, 1, 3, 4, 2)  # Back to [B, C, H, W, D]
+        
+        # Second rotation: [B, C, H, W, D] -> [B, C, W, D, H]
+        sample_rot2 = sample.permute(0, 1, 3, 4, 2)
+        pred3 = model(sample_rot2, t, encoder_hidden_states=encoder_hidden_states).sample
+        pred3 = pred3.permute(0, 1, 4, 2, 3)  # Back to [B, C, H, W, D]
+        
+        # Average predictions
+        return (pred1 + pred2 + pred3) / 3.0
 
     def sample_ddim(self, prompt, num_samples=8, image_size=(32, 32, 32), num_inference_steps=50, show_intermediate=False, guidance_scale=7.0):
         with torch.no_grad():
