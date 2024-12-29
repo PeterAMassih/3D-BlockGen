@@ -19,6 +19,10 @@ import torch
 from typing import Optional
 from iopath.common.file_io import PathManager
 
+from typing import Optional
+from diffusers import DDPMScheduler, DDIMScheduler
+from blockgen.models.diffusion import DiffusionModel3D
+
 def save_ply_with_colors(
     f,
     verts: torch.Tensor,
@@ -91,18 +95,28 @@ def save_ply_with_colors(
         )
 
 class DiffusionInference3D:
-    def __init__(self, model, noise_scheduler, config, device='cuda', 
-             color_model=None, color_noise_scheduler=None, color_config=None):
-        """Initialize with optional color model for two-stage generation."""
+    def __init__(self, 
+             model: DiffusionModel3D, 
+             noise_scheduler: DDPMScheduler,
+             device: str = 'cuda',
+             color_model: Optional[DiffusionModel3D] = None,
+             color_noise_scheduler: Optional[DDPMScheduler] = None):
+        """Initialize with optional color model for two-stage generation.
+        
+        Args:
+            model: Base diffusion model (shape model in two-stage case)
+            noise_scheduler: Noise scheduler for base model
+            device: Device to run inference on
+            color_model: Optional color model for two-stage generation
+            color_noise_scheduler: Optional noise scheduler for color model
+        """
         self.model = model.to(device)
         self.noise_scheduler = noise_scheduler
-        self.config = config
         self.device = device
         
         # Add color model components (optional)
         self.color_model = color_model.to(device) if color_model is not None else None
         self.color_noise_scheduler = color_noise_scheduler
-        self.color_config = color_config
         
         # Initialize text encoder (used for both stages)
         self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
@@ -129,7 +143,7 @@ class DiffusionInference3D:
             do_class_guidance = guidance_scale > 1.0
             
             # Initialize noise with correct shape: [B, C, H, W, D]
-            num_channels = self.config.in_channels
+            num_channels = self.model.in_channels
             noise = torch.randn(num_samples, num_channels, *image_size).to(self.device)
             
             # Encode prompts
@@ -195,6 +209,7 @@ class DiffusionInference3D:
                 sample = self.noise_scheduler.step(residual, t, sample).prev_sample
                 
             return sample
+
     def sample_two_stage(self, prompt, num_samples=8, image_size=(32, 32, 32), 
                     show_intermediate=False, guidance_scale=7.0, 
                     color_guidance_scale=7.0, use_rotations=True, use_mean_init=False):
@@ -321,7 +336,7 @@ class DiffusionInference3D:
         with torch.no_grad():
             do_class_guidance = guidance_scale > 1.0
             
-            num_channels = self.config.in_channels
+            num_channels = self.model.in_channels
             sample = torch.randn(num_samples, num_channels, *image_size).to(self.device)
             
             encoder_hidden_states = self.encode_prompt([prompt] * num_samples)
@@ -379,7 +394,7 @@ class DiffusionInference3D:
             axs = axs.reshape(-1, 1)
         
         for i, sample in enumerate(samples_):  # sample shape: [C, H, W, D]
-            if self.config.in_channels > 1:
+            if sample.shape[0] > 1:
                 # Print statistics
                 if threshold is None:
                     adaptive_threshold = np.percentile(sample[3], 90)
@@ -453,7 +468,7 @@ class DiffusionInference3D:
             ax.view_init(elev=30, azim=45)
             ax.set_title("3D View")
             ax.set_box_aspect([1, 1, 1])
-            shape = occupancy.shape if self.config.in_channels > 1 else binary_sample.shape
+            shape = occupancy.shape if self.model.in_channels > 1 else binary_sample.shape
             ax.set_xlim(0, shape[0])
             ax.set_ylim(0, shape[1])
             ax.set_zlim(0, shape[2])

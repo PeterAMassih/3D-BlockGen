@@ -44,42 +44,42 @@ def load_model_for_inference(model_path: str, voxel_config: VoxelConfig, diffusi
     
     return diffusion_model
 
-if __name__ == "__main__":
-    voxel_config = VoxelConfig(
-        use_rgb=True,  # Set to True if using RGBA data
-        default_color=[0.5, 0.5, 0.5],
-        alpha_weight=1.0,
-        rgb_weight=1.0
-    )
+# if __name__ == "__main__":
+#     voxel_config = VoxelConfig(
+#         use_rgb=True,  # Set to True if using RGBA data
+#         default_color=[0.5, 0.5, 0.5],
+#         alpha_weight=1.0,
+#         rgb_weight=1.0
+#     )
     
-    diffusion_config = DiffusionConfig(
-        num_timesteps=1000,
-        use_ema=True,
-        ema_decay=0.9999,
-        ema_update_after_step=0,
-        ema_device='cuda'
-    )
+#     diffusion_config = DiffusionConfig(
+#         num_timesteps=1000,
+#         use_ema=True,
+#         ema_decay=0.9999,
+#         ema_update_after_step=0,
+#         ema_device='cuda'
+#     )
 
-    model_path = "runs/experiment_color/best_model"
-    diffusion_model = load_model_for_inference(
-        model_path=model_path,
-        voxel_config=voxel_config,
-        diffusion_config=diffusion_config
-    )
+#     model_path = "runs/experiment_color/best_model"
+#     diffusion_model = load_model_for_inference(
+#         model_path=model_path,
+#         voxel_config=voxel_config,
+#         diffusion_config=diffusion_config
+#     )
 
-    inferencer = DiffusionInference3D(
-        model=diffusion_model.model,
-        noise_scheduler=diffusion_model.noise_scheduler,
-        config=voxel_config,
-        device='cuda'
-    )
+#     inferencer = DiffusionInference3D(
+#         model=diffusion_model.model,
+#         noise_scheduler=diffusion_model.noise_scheduler,
+#         config=voxel_config,
+#         device='cuda'
+#     )
  
-    samples = inferencer.sample(
-        prompt="A stone statue",
-        num_samples=2,
-        image_size=(32, 32, 32),
-        show_intermediate=False,
-        guidance_scale=7.0
-    )
+#     samples = inferencer.sample(
+#         prompt="A stone statue",
+#         num_samples=2,
+#         image_size=(32, 32, 32),
+#         show_intermediate=False,
+#         guidance_scale=7.0
+#     )
 
-    inferencer.visualize_samples(samples)
+#     inferencer.visualize_samples(samples)

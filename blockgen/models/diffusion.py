@@ -121,3 +121,7 @@ class DiffusionModel3D(nn.Module):
             self.ema_model.copy_to(self.model.parameters())
         else:
             self.model = self.model.from_pretrained(f"{save_path}_main")
+    
+    @property
+    def in_channels(self):
+        return self.model.config.in_channels
