@@ -211,29 +211,31 @@ class DiffusionInference3D:
             return sample
 
     def sample_two_stage(self, prompt, num_samples=8, image_size=(32, 32, 32), 
-                    show_intermediate=False, guidance_scale=7.0, 
+                    show_intermediate=False, guidance_scale=7.0, show_after_shape=False,
                     color_guidance_scale=7.0, use_rotations=True, use_mean_init=False):
         """
-        Two-stage generation: first shape, then color.
+        Two-stage generation process: first shape, then color.
+        
+        This follows our training setup:
+        1. Shape stage generates binary occupancy mask (1 channel)
+        2. Color stage uses generated shape as occupancy mask and adds RGB colors (4 channels total)
         
         Args:
             prompt: Text prompt for conditioning
             num_samples: Number of samples to generate
-            image_size: Voxel grid size (H, W, D)
-            show_intermediate: Show intermediate denoising steps
-            guidance_scale: Guidance scale for shape generation
-            color_guidance_scale: Guidance scale for color generation
-            use_rotations: Whether to use rotation augmentation
-            use_mean_init: Whether to initialize with mean noise
+            image_size: Size of voxel grid (H, W, D)
+            show_intermediate: Show denoising steps
+            guidance_scale: Classifier-free guidance scale for shape generation
+            color_guidance_scale: Classifier-free guidance scale for color generation
+            use_rotations: Use rotational augmentation during sampling
+            use_mean_init: Initialize with mean values instead of pure noise
         """
         if self.color_model is None:
             raise ValueError("Color model and scheduler required for two-stage sampling")
-
+    
         with torch.no_grad():
-            # Stage 1: Generate shapes
+            # Stage 1: Shape Generation
             print("Stage 1: Generating shapes...")
-            
-            # Use existing sample method with shape model
             shape_samples = self.sample(
                 prompt=prompt,
                 num_samples=num_samples,
@@ -242,43 +244,50 @@ class DiffusionInference3D:
                 guidance_scale=guidance_scale,
                 use_rotations=use_rotations,
                 use_mean_init=use_mean_init
-            )
+            )  # Output: [B, 1, H, W, D]
             
-            # Convert to binary occupancy mask
-            shape_occupancy = (shape_samples > 0.5).float()
+            # Convert to binary occupancy
+            shape_occupancy = (shape_samples > 0.5).float()  # [B, 1, H, W, D]
             
-            # Stage 2: Generate colors with occupancy mask
+            if show_after_shape:
+                print("\nShape stage completed. Visualization:")
+                self.visualize_samples(shape_occupancy, threshold=0.5)
+                
+            # Stage 2: Color Generation
             print("\nStage 2: Adding colors...")
             
-            # Initialize with noise for RGB and clean occupancy mask
-            noise = torch.randn(num_samples, 4, *image_size).to(self.device)
-            if use_mean_init:
-                # Initialize all channels to 0.5 and then mask with shape
-                mean_data = 0.5 * torch.ones_like(noise)
-                # Only keep color values where we have shape
-                mean_data = mean_data * shape_occupancy  # This will zero out RGB where alpha=0
-                noise = mean_data
-            noise[:, 3:] = shape_occupancy  # Replace alpha channel with shape
+            # Initialize noise for color stage
+            # We want RGB noise only where we have shape, and clean alpha mask
+            noise = torch.randn(num_samples, 4, *image_size).to(self.device)  # [B, 4, H, W, D]
+            noise[:, :3] = noise[:, :3] * shape_occupancy  # Mask RGB noise by shape
+            noise[:, 3:] = shape_occupancy  # Set alpha to binary shape
             
-            # Get text embeddings for color stage
+            if use_mean_init:
+                # For mean init, we still respect the shape mask
+                mean_data = torch.zeros_like(noise)
+                mean_data[:, :3] = 0.5 * shape_occupancy  # RGB = 0.5 where shape exists
+                mean_data[:, 3:] = shape_occupancy
+                noise = mean_data
+            
+            # Text embeddings for color stage
             encoder_hidden_states = self.encode_prompt([prompt] * num_samples)
             if color_guidance_scale > 1.0:
                 encoder_hidden_states_uncond = self.encode_prompt([""] * num_samples)
             
-            # Setup color stage sampling
+            # Color denoising loop
             timesteps = self.color_noise_scheduler.timesteps.to(self.device)
             sample = noise
             
-            # Color denoising loop
             for t in tqdm(timesteps, desc="Color Sampling"):
-                # Get noise prediction
+                # Get color prediction (model outputs RGB noise)
                 if use_rotations:
                     residual = self._get_prediction_with_rotations(
-                        sample=sample,
+                        sample=sample,  # Full RGBA input [B, 4, H, W, D]
                         t=t,
                         encoder_hidden_states=encoder_hidden_states,
                         model=self.color_model
-                    )
+                    )  # RGB prediction [B, 3, H, W, D]
+                    
                     if color_guidance_scale > 1.0:
                         residual_uncond = self._get_prediction_with_rotations(
                             sample=sample,
@@ -290,24 +299,33 @@ class DiffusionInference3D:
                     residual = self.color_model(
                         sample, t, encoder_hidden_states=encoder_hidden_states
                     ).sample
+                    
                     if color_guidance_scale > 1.0:
                         residual_uncond = self.color_model(
                             sample, t, encoder_hidden_states=encoder_hidden_states_uncond
                         ).sample
                 
-                # Apply guidance if needed
+                # Apply guidance scale if needed
                 if color_guidance_scale > 1.0:
-                    residual = residual_uncond + color_guidance_scale * (
-                        residual - residual_uncond
-                    )
+                    residual = residual_uncond + color_guidance_scale * (residual - residual_uncond)
                 
-                # Denoise step
-                sample = self.color_noise_scheduler.step(residual, t, sample).prev_sample
+                # Mask residual to shape
+                residual = residual * shape_occupancy
                 
-                # Keep occupancy mask clean
-                sample[:, 3:] = shape_occupancy
+                # Create full RGBA residual with clean alpha
+                full_residual = torch.zeros_like(sample)  # [B, 4, H, W, D]
+                full_residual[:, :3] = residual  # RGB noise
+                # Alpha residual stays zero
                 
-                # Show intermediate results if requested
+                # Denoising step
+                sample = self.color_noise_scheduler.step(full_residual, t, sample).prev_sample
+                
+                # Ensure RGB exists only where we have shape
+                sample = torch.cat([
+                    sample[:, :3] * shape_occupancy,  # RGB masked by shape
+                    shape_occupancy  # Keep original binary mask
+                ], dim=1)
+                
                 if show_intermediate and t % 50 == 49:
                     print(f"\nColor timestep: {t}")
                     self.visualize_samples(sample, threshold=0.5)
@@ -375,100 +393,120 @@ class DiffusionInference3D:
 
             return sample
 
-    def visualize_samples(self, samples, threshold=None):
+    def visualize_samples(self, samples, threshold=0.5):
         """
-        Visualize generated samples with both 2D slices and 3D rendering.
+        Visualize samples with 2D and 3D views.
+        
         Args:
-            samples: Tensor of shape [B, C, H, W, D] where:
-                    B = batch size
-                    C = channels (1 for occupancy, 4 for RGBA)
-                    H, W, D = spatial dimensions (e.g., 32, 32, 32)
-            threshold: Optional threshold value. If None, will be determined by distribution
+            samples: Tensor [B, C, H, W, D]
+                    C=1 for shape stage (occupancy)
+                    C=4 for color stage (RGB + alpha/occupancy)
+            threshold: Binary occupancy threshold (default 0.5)
         """
-        # Convert to numpy: maintains same dimensions
-        samples_ = samples.cpu().numpy()  # [B, C, H, W, D]
+        samples_ = samples.cpu().numpy()
         
-        # Setup plots
-        fig, axs = plt.subplots(2, len(samples_), figsize=(4*len(samples_), 8))
-        if len(samples_) == 1:  # Handle single sample case
-            axs = axs.reshape(-1, 1)
+        # Convert single sample to list for consistent processing
+        if len(samples_.shape) == 4:  # Single sample case [C, H, W, D]
+            samples_ = samples_[np.newaxis, ...]  # Add batch dimension [1, C, H, W, D]
+            
+        # Setup plots with correct handling for single/multiple samples
+        num_samples = len(samples_)
+        if num_samples == 1:
+            fig, axs = plt.subplots(2, 1, figsize=(6, 10))
+            axs = axs.reshape(-1, 1)  # Reshape to 2x1 for consistent indexing
+        else:
+            fig, axs = plt.subplots(2, num_samples, figsize=(4*num_samples, 8))
         
-        for i, sample in enumerate(samples_):  # sample shape: [C, H, W, D]
-            if sample.shape[0] > 1:
-                # Print statistics
-                if threshold is None:
-                    adaptive_threshold = np.percentile(sample[3], 90)
-                    print(f"Using adaptive threshold: {adaptive_threshold:.3f}")
-                else:
-                    adaptive_threshold = threshold
+        for i, sample in enumerate(samples_):
+            if sample.shape[0] > 1:  # RGBA case
+                # Get binary occupancy first
+                occupancy = (sample[3] > threshold).astype(bool)  # [H, W, D]
+                rgb = np.clip(sample[:3], 0, 1)  # [3, H, W, D]
                 
-                print(f"RGB range: [{sample[:3].min():.3f}, {sample[:3].max():.3f}]")
-                print(f"Alpha range: [{sample[3].min():.3f}, {sample[3].max():.3f}]")
-                print(f"Red: [{sample[0].min():.3f}, {sample[0].max():.3f}]")
-                print(f"Green: [{sample[1].min():.3f}, {sample[1].max():.3f}]")
-                print(f"Blue: [{sample[2].min():.3f}, {sample[2].max():.3f}]")
+                # Print detailed stats
+                print("\nSample Statistics:")
+                print("Occupancy:")
+                print(f"- Total voxels: {occupancy.size}")
+                print(f"- Occupied voxels: {np.sum(occupancy)} ({(np.sum(occupancy)/occupancy.size)*100:.2f}%)")
                 
-                # Get binary occupancy from alpha channel [H, W, D]
-                occupancy = (sample[3] > adaptive_threshold).astype(bool)
-                # Clip RGB values to [0,1] range [3, H, W, D]
-                rgb = np.clip(sample[:3], 0, 1)
+                print("\nColor Statistics (occupied voxels):")
+                # Per-channel stats for occupied voxels
+                for i_color, color in enumerate(['Red', 'Green', 'Blue']):
+                    channel = rgb[i_color]
+                    occupied_colors = channel[occupancy]
+                    print(f"\n{color} Channel:")
+                    print(f"- Range: [{occupied_colors.min():.3f}, {occupied_colors.max():.3f}]")
+                    print(f"- Mean: {occupied_colors.mean():.3f}")
+                    print(f"- Std: {occupied_colors.std():.3f}")
                 
-                print(f"Occupied voxels: {np.sum(occupancy)} ({(np.sum(occupancy)/occupancy.size)*100:.2f}% of volume)")
+                # Overall color distribution
+                print("\nOverall RGB Statistics:")
+                print(f"- Mean intensity: {rgb[:, occupancy].mean():.3f}")
+                print(f"- Color variance: {rgb[:, occupancy].std():.3f}")
                 
-                # Mid-depth slice visualization
-                mid_depth = sample.shape[3] // 2  # Get middle of depth dimension
+                # Distribution of colors
+                rgb_occupied = rgb[:, occupancy].T  # [N, 3] array of RGB values
+                dominant_colors = np.mean(rgb_occupied > 0.5, axis=0)
+                print("\nColor Distribution:")
+                print(f"- Dominant Red: {dominant_colors[0]*100:.1f}%")
+                print(f"- Dominant Green: {dominant_colors[1]*100:.1f}%")
+                print(f"- Dominant Blue: {dominant_colors[2]*100:.1f}%")
                 
-                # Get RGB and alpha for middle slice
+                # 2D slice visualization
+                mid_depth = sample.shape[3] // 2
+                slice_img = np.zeros((*rgb[:, :, :, mid_depth].shape[1:], 4))
+                
+                # Get middle slices
                 rgb_slice = rgb[:, :, :, mid_depth]  # [3, H, W]
                 alpha_slice = occupancy[:, :, mid_depth]  # [H, W]
                 
-                # Create RGBA slice image [H, W, 4]
-                slice_img = np.zeros((*rgb_slice.shape[1:], 4))  # [H, W, 4]
                 if np.any(alpha_slice):
-                    # Move RGB channels to last dimension for occupied voxels
                     rgb_slice_hwc = np.moveaxis(rgb_slice, 0, -1)  # [H, W, 3]
-                    slice_img[alpha_slice] = np.concatenate([rgb_slice_hwc[alpha_slice], np.ones((np.sum(alpha_slice), 1))], axis=1)
+                    slice_img[alpha_slice] = np.concatenate([
+                        rgb_slice_hwc[alpha_slice],
+                        np.ones((np.sum(alpha_slice), 1))
+                    ], axis=1)
                 
-                # Show 2D slice
+                # Show slices
                 axs[0, i].imshow(slice_img)
-                axs[0, i].set_title("Center Slice")
+                axs[0, i].set_title(f"Center Slice (d={mid_depth})")
                 axs[0, i].axis("off")
                 
                 # 3D visualization
                 ax = axs[1, i]
                 ax.remove()
-                ax = fig.add_subplot(2, len(samples_), len(samples_) + i + 1, projection='3d')
+                ax = fig.add_subplot(2, num_samples, num_samples + i + 1, projection='3d')
                 
-                # Create colors for voxels [H, W, D, 4]
+                # Create colors for occupied voxels
                 colors = np.zeros((*occupancy.shape, 4))
                 if np.any(occupancy):
-                    # Convert RGB from [3, H, W, D] to [H, W, D, 3]
-                    rgb_hwdc = np.moveaxis(rgb, 0, -1)
+                    rgb_hwdc = np.moveaxis(rgb, 0, -1)  # [H, W, D, 3]
                     colors[occupancy, :3] = rgb_hwdc[occupancy]
                     colors[occupancy, 3] = 1.0
                 
                 ax.voxels(occupancy, facecolors=colors, edgecolor='k', alpha=0.8)
+                shape = occupancy.shape
                 
-            else:
-                # Single channel case
-                binary_sample = (sample[0] > threshold).astype(bool)  # [H, W, D]
+            else:  # Shape stage (single channel)
+                binary_sample = (sample[0] > threshold).astype(bool)
+                print(f"\nShape occupancy: {np.sum(binary_sample)} voxels ({(np.sum(binary_sample)/binary_sample.size)*100:.2f}%)")
                 
-                # Show middle slice
+                # 2D slice
                 axs[0, i].imshow(binary_sample[:, :, binary_sample.shape[2]//2], cmap="gray")
                 axs[0, i].set_title("Center Slice")
                 axs[0, i].axis("off")
                 
-                # 3D visualization
+                # 3D view
                 ax = axs[1, i]
                 ax.remove()
-                ax = fig.add_subplot(2, len(samples_), len(samples_) + i + 1, projection='3d')
+                ax = fig.add_subplot(2, num_samples, num_samples + i + 1, projection='3d')
                 ax.voxels(binary_sample, edgecolor='k')
+                shape = binary_sample.shape
             
-            # Set 3D plot properties
+            # Plot settings
             ax.view_init(elev=30, azim=45)
             ax.set_title("3D View")
             ax.set_box_aspect([1, 1, 1])
-            shape = occupancy.shape if self.model.in_channels > 1 else binary_sample.shape
             ax.set_xlim(0, shape[0])
             ax.set_ylim(0, shape[1])
             ax.set_zlim(0, shape[2])

@@ -1,76 +1,71 @@
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
-
-def plot_voxel_tensor(tensor_path: str, threshold: float = 0.5):
-    """
-    Load and visualize a single .pt tensor file containing voxel data.
-    
-    Args:
-        tensor_path: Path to the .pt file
-        threshold: Threshold for binary occupancy
-    """
-    # Load tensor
-    tensor = torch.load(tensor_path)
-    
-    # Convert to numpy
-    voxel_data = tensor.cpu().numpy()
+def plot_voxel_tensor(tensor: torch.Tensor, threshold: float = 0.5):
+    """Create matplotlib visualization of voxel tensor."""
+    # Convert tensor to numpy and handle RGBA vs occupancy
+    tensor = tensor.cpu()
     
     # Create figure with 2 subplots
     fig = plt.figure(figsize=(12, 5))
     
-    # Determine if RGB or occupancy only
-    is_rgba = voxel_data.shape[0] == 4
-    
-    if is_rgba:
-        # Print basic stats
-        print(f"RGB range: [{voxel_data[:3].min():.3f}, {voxel_data[:3].max():.3f}]")
-        print(f"Alpha range: [{voxel_data[3].min():.3f}, {voxel_data[3].max():.3f}]")
+    if tensor.shape[0] == 4:  # RGBA format
+        occupancy = tensor[3] > threshold  # Use alpha channel for occupancy
+        colors = tensor[:3]  # RGB channels
         
-        # Get occupancy and RGB
-        occupancy = (voxel_data[3] > threshold).astype(bool)
-        rgb = voxel_data[:3]
-        print(f"Occupied voxels: {np.sum(occupancy)} ({(np.sum(occupancy)/occupancy.size)*100:.2f}% of volume)")
+        # Print stats
+        print(f"RGB range: [{colors.min():.3f}, {colors.max():.3f}]")
+        print(f"Alpha range: [{tensor[3].min():.3f}, {tensor[3].max():.3f}]")
+        print(f"Occupied voxels: {torch.sum(occupancy)} ({(torch.sum(occupancy)/occupancy.numel())*100:.2f}% of volume)")
         
         # 2D slice visualization
         ax1 = fig.add_subplot(121)
-        mid_slice_idx = voxel_data.shape[2]//2
-        rgb_slice = np.moveaxis(rgb[:, :, mid_slice_idx], 0, -1)
-        alpha_slice = occupancy[:, :, mid_slice_idx]
+        mid_slice_idx = tensor.shape[2]//2
+        rgb_slice = colors[:, :, mid_slice_idx].permute(1, 2, 0).numpy()
+        alpha_slice = occupancy[:, :, mid_slice_idx].numpy()
+        
         slice_img = np.zeros((*rgb_slice.shape[:-1], 4))
         slice_img[alpha_slice] = np.concatenate([rgb_slice[alpha_slice], np.ones((np.sum(alpha_slice), 1))], axis=1)
         ax1.imshow(slice_img)
+        ax1.set_title("Center Slice")
+        ax1.axis('equal')
         
         # 3D visualization
         ax2 = fig.add_subplot(122, projection='3d')
         rgba = np.zeros((*occupancy.shape, 4))
         for c in range(3):
-            rgba[..., c] = np.where(occupancy, rgb[c], 0)
-        rgba[..., 3] = occupancy.astype(float)
+            rgba[..., c] = np.where(occupancy, colors[c], 0)
+        rgba[..., 3] = occupancy.numpy().astype(float)
         
-        ax2.voxels(occupancy, facecolors=rgba, edgecolor='k')
-    else:
-        # Handle occupancy-only case
-        occupancy = (voxel_data[0] > threshold).astype(bool)
-        print(f"Occupied voxels: {np.sum(occupancy)} ({(np.sum(occupancy)/occupancy.size)*100:.2f}% of volume)")
+        ax2.voxels(occupancy, facecolors=rgba, edgecolor='k', alpha=0.8)
+        
+    else:  # Occupancy only
+        occupancy = tensor[0] > threshold
+        print(f"Occupied voxels: {torch.sum(occupancy)} ({(torch.sum(occupancy)/occupancy.numel())*100:.2f}% of volume)")
         
         # 2D slice
         ax1 = fig.add_subplot(121)
-        ax1.imshow(occupancy[:, :, voxel_data.shape[2]//2], cmap="gray")
+        mid_slice = occupancy[:, :, tensor.shape[2]//2].numpy()
+        ax1.imshow(mid_slice, cmap='gray')
+        ax1.set_title("Center Slice")
+        ax1.axis('equal')
         
         # 3D view
         ax2 = fig.add_subplot(122, projection='3d')
-        ax2.voxels(occupancy, edgecolor='k')
+        ax2.voxels(occupancy.numpy(), edgecolor='k', alpha=0.3)
     
-    ax1.set_title("Center Slice")
+    # Adjust 3D view
     ax2.set_title("3D View")
     ax2.view_init(elev=30, azim=45)
+    ax2.set_box_aspect([1, 1, 1])
     
-    fname = Path(tensor_path).stem
-    plt.suptitle(f"Voxel Visualization: {fname}")
-    plt.show()
+    # Add grid and axis labels
+    ax2.grid(True)
+    ax2.set_xlabel('X')
+    ax2.set_ylabel('Y')
+    ax2.set_zlabel('Z')
+    
+    plt.tight_layout()
+    return fig
 
+# For standalone use with file input
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Visualize a voxel tensor file')
@@ -78,4 +73,7 @@ if __name__ == "__main__":
     parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for binary occupancy')
     args = parser.parse_args()
     
-    plot_voxel_tensor(args.tensor_path, args.threshold)
+    # Load tensor
+    tensor = torch.load(args.tensor_path)
+    plot_voxel_tensor(tensor, args.threshold)
+    plt.show()

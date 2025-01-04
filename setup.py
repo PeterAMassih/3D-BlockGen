@@ -17,7 +17,11 @@ setup(
         "scikit-learn",
         "pandas",
         "trimesh",
-        "objaverse"
+        "objaverse",
+        "pytorch3d",  # Added for visualization
+        "pillow",     # Added for image processing
+        "imageio",    # Added for GIF creation
+        "iopath",     # Added for PyTorch3D
     ],
-    python_requires=">=3.10",  # Specifically for Python 3.10+
+    python_requires=">=3.10",
 )

@@ -15,7 +15,7 @@ python scripts/finetune.py \
     --data_dir objaverse_finetune_voxelized \
     --label_mapping objaverse_finetune/file_to_label_map.json \
     --save_dir runs/finetune \
-    --checkpoint_path /scratch/students/2024-fall-sp-pabdel/3D-BlockGen/runs/experiment_two_stage/shape/checkpoints/checkpoint_step_120000.pth \
+    --checkpoint_path /scratch/students/2024-fall-sp-pabdel/3D-BlockGen/runs/finetune/shape/checkpoints/checkpoint_step_124000.pth \
     --mode two_stage \
     --stage shape
 

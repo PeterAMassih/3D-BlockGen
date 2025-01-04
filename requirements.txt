@@ -12,3 +12,4 @@ pandas
 trimesh
 objaverse
 wandb
+datasets
