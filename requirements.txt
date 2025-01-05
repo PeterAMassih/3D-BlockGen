@@ -13,3 +13,7 @@ trimesh
 objaverse
 wandb
 datasets
+iopath
+
+# also install this
+# pip install --no-deps --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu117_pyt201/download.html

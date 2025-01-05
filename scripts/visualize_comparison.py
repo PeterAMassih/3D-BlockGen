@@ -186,6 +186,46 @@ def create_spinning_gif(glb_path: str, output_path: str, num_frames: int = 36):
     imageio.mimsave(output_path, frames, duration=int(1000/12))
     print(f"Saved to {output_path}")
 
+def create_augmentation_grid(voxel_path: str):
+    """Create a 2x2 grid visualization of original and augmented voxels."""
+    # Load original and augmented versions
+    base_path = Path(voxel_path)
+    paths = [
+        base_path,                                    # Original
+        base_path.parent / f"{base_path.stem}_aug1.pt",  # 90° X-axis
+        base_path.parent / f"{base_path.stem}_aug2.pt",  # 90° Y-axis
+        base_path.parent / f"{base_path.stem}_aug3.pt"   # 90° Z-axis
+    ]
+    
+    # Labels for each subplot matching the actual rotations in your augmentation code
+    labels = ["Original", "90° X-axis", "90° Y-axis", "90° Z-axis"]
+    
+    fig = plt.figure(figsize=(12, 12))
+    
+    for idx, (path, label) in enumerate(zip(paths, labels), 1):
+        tensor = torch.load(path)
+        ax = fig.add_subplot(2, 2, idx, projection='3d')
+        
+        if tensor.shape[0] == 4:  # RGBA format
+            occupancy = tensor[3] > 0.5
+            colors = tensor[:3]
+            rgba = np.zeros((*occupancy.shape, 4))
+            for c in range(3):
+                rgba[..., c] = np.where(occupancy, colors[c], 0)
+            rgba[..., 3] = occupancy.numpy().astype(float)
+            ax.voxels(occupancy, facecolors=rgba, edgecolor='k', alpha=0.8)
+        else:
+            occupancy = tensor[0] > 0.5
+            ax.voxels(occupancy, edgecolor='k', alpha=0.3)
+            
+        ax.view_init(elev=30, azim=45)
+        ax.set_box_aspect([1, 1, 1])
+        ax.set_title(f"Rotation: {label}", pad=20)
+        ax.grid(True)
+    
+    plt.tight_layout()
+    return fig
+
 def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_file: str, output_path: str, show_augmentations: bool = False):
     """Create a visualization comparing animated GLB and voxelized versions."""
     # Load annotations to get prompt
@@ -193,17 +233,6 @@ def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_f
         annotations = json.load(f)
     
     model_id = Path(voxel_path).stem.split('_aug')[0]
-    
-    if show_augmentations:
-    # Load original and augmented files
-    base_path = Path(voxel_path)
-    aug_paths = [
-        base_path,  # Original
-        base_path.parent / f"{base_path.stem}_aug1.pt",  # Aug 1
-        base_path.parent / f"{base_path.stem}_aug2.pt",  # Aug 2
-        base_path.parent / f"{base_path.stem}_aug3.pt"   # Aug 3
-    ]
-    
     prompt = ""
     if model_id in annotations:
         name = annotations[model_id].get('name', 'an object')
@@ -229,26 +258,11 @@ def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_f
     temp_voxel = "temp_voxel.png"
     plt.savefig(temp_voxel, bbox_inches='tight', dpi=300)
     plt.close()
-
-    if show_augmentations:
-    # Create augmentation grid
-    aug_fig = create_augmentation_grid(aug_paths)
-    aug_img_path = "temp_augmentations.png"
-    aug_fig.savefig(aug_img_path, bbox_inches='tight', dpi=300)
-    plt.close(aug_fig)
     
-    # Load and resize augmentation image
-    aug_img = Image.open(aug_img_path)
-    aug_height = target_height
-    aug_aspect = aug_img.size[0] / aug_img.size[1]
-    aug_size = (int(aug_height * aug_aspect), aug_height)
-    aug_img = aug_img.resize(aug_size, Image.Resampling.LANCZOS)
+    # Set up initial sizes
+    target_height = 400
     
-    # Adjust layout to include augmentations
-    width = glb_size[0] + voxel_size[0] + aug_size[0] + spacing * 2 + 2 * padding
-    
-    # Load all frames from the spinning GIF
-    print("Creating comparison visualization...")
+    # Load and process GLB frames
     glb_gif = Image.open(temp_gif)
     glb_frames = []
     try:
@@ -258,27 +272,46 @@ def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_f
     except EOFError:
         pass
     
+    # Load and process voxel image
     voxel_img = Image.open(temp_voxel)
     
-    # Set up sizes and spacing
-    target_height = 400
+    # Calculate sizes
     aspect = glb_frames[0].size[0] / glb_frames[0].size[1]
     glb_size = (int(target_height * aspect), target_height)
     voxel_size = (int(target_height * aspect), target_height)
     
-    # Resize images
+    # Resize base images
     glb_frames = [f.resize(glb_size, Image.Resampling.LANCZOS) for f in glb_frames]
     voxel_img = voxel_img.resize(voxel_size, Image.Resampling.LANCZOS)
+    
+    # Create and add augmentation grid if requested
+    if show_augmentations:
+        print("Creating augmentation grid...")
+        aug_fig = create_augmentation_grid(voxel_path)
+        temp_aug = "temp_augmentations.png"
+        aug_fig.savefig(temp_aug, bbox_inches='tight', dpi=300, facecolor='white')
+        plt.close(aug_fig)
+        
+        aug_img = Image.open(temp_aug)
+        aug_width = int(target_height * 1.5)
+        aug_aspect = aug_img.size[0] / aug_img.size[1]
+        aug_size = (aug_width, int(aug_width / aug_aspect))
+        aug_img = aug_img.resize(aug_size, Image.Resampling.LANCZOS)
     
     # Calculate layout
     padding = 80
     spacing = 150
     text_height = 100
     
-    width = glb_size[0] + voxel_size[0] + spacing + 2 * padding
-    height = max(glb_size[1], voxel_size[1]) + 2 * padding + text_height
+    # Adjust width based on whether augmentations are included
+    if show_augmentations:
+        width = glb_size[0] + voxel_size[0] + aug_size[0] + spacing * 3 + 2 * padding
+        height = max(glb_size[1], voxel_size[1], aug_size[1]) + 2 * padding + text_height
+    else:
+        width = glb_size[0] + voxel_size[0] + spacing + 2 * padding
+        height = max(glb_size[1], voxel_size[1]) + 2 * padding + text_height
     
-    # Try to load fonts
+    # Load fonts
     try:
         font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
         font_label = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
@@ -290,15 +323,14 @@ def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_f
             font_title = ImageFont.load_default()
             font_label = ImageFont.load_default()
     
-    # Create output frames
+    # Create frames
     print(f"Creating {len(glb_frames)} comparison frames...")
     output_frames = []
     for glb_frame in glb_frames:
-        # Create new frame
         frame = Image.new('RGB', (width, height), 'white')
         draw = ImageDraw.Draw(frame)
         
-        # Add title (prompt)
+        # Add title
         y_offset = padding // 2
         for line in prompt.split('\n'):
             bbox = draw.textbbox((0, 0), line, font=font_title)
@@ -307,20 +339,19 @@ def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_f
             draw.text((text_x, y_offset), line, fill='black', font=font_title)
             y_offset += 30
         
-        # Paste images
+        # Paste base images
         frame.paste(glb_frame, (padding, text_height + padding))
         frame.paste(voxel_img, (padding + glb_size[0] + spacing, text_height + padding))
         
-        # Add arrow and label
+        # Add voxelization arrow
         arrow_x1 = padding + glb_size[0] + spacing//4
         arrow_x2 = padding + glb_size[0] + spacing*3//4
         arrow_y = text_height + padding + target_height//2
         
-        # Draw arrow
         draw.line([(arrow_x1, arrow_y), (arrow_x2, arrow_y)], fill='black', width=3)
         draw.polygon([(arrow_x2, arrow_y), (arrow_x2-15, arrow_y-10), (arrow_x2-15, arrow_y+10)], fill='black')
         
-        # Add transformation label
+        # Add voxelization label
         label = "Voxelization"
         bbox = draw.textbbox((0, 0), label, font=font_label)
         label_width = bbox[2] - bbox[0]
@@ -328,7 +359,29 @@ def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_f
         label_y = arrow_y - 30
         draw.text((label_x, label_y), label, fill='black', font=font_label)
         
-        # Add image labels
+        # Add augmentations if requested
+        if show_augmentations:
+            # Add data augmentation arrow
+            aug_arrow_x1 = padding + glb_size[0] + voxel_size[0] + spacing * 1.5
+            aug_arrow_x2 = aug_arrow_x1 + spacing
+            aug_arrow_y = arrow_y
+            
+            draw.line([(aug_arrow_x1, aug_arrow_y), (aug_arrow_x2, aug_arrow_y)], fill='black', width=3)
+            draw.polygon([(aug_arrow_x2, aug_arrow_y), (aug_arrow_x2-15, aug_arrow_y-10), 
+                         (aug_arrow_x2-15, aug_arrow_y+10)], fill='black')
+            
+            # Add augmentation label
+            aug_label = "Data Augmentation"
+            bbox = draw.textbbox((0, 0), aug_label, font=font_label)
+            aug_label_width = bbox[2] - bbox[0]
+            aug_label_x = aug_arrow_x1 + (spacing - aug_label_width) // 2
+            aug_label_y = aug_arrow_y - 30
+            draw.text((aug_label_x, aug_label_y), aug_label, fill='black', font=font_label)
+            
+            # Paste augmentation grid
+            frame.paste(aug_img, (int(aug_arrow_x2 + spacing/2), text_height + padding))
+        
+        # Add base image labels
         draw.text((padding + glb_size[0]//2 - 40, text_height + padding - 25), 
                  "Original GLB", fill='black', font=font_label)
         draw.text((padding + glb_size[0] + spacing + voxel_size[0]//2 - 60, 
@@ -336,20 +389,24 @@ def create_comparison_visualization(glb_path: str, voxel_path: str, annotation_f
         
         output_frames.append(frame)
     
-    # Save animation
-    print(f"Saving final animation with {len(output_frames)} frames...")
+    # Save final animation
+    print(f"Saving final animation...")
     output_frames[0].save(
         output_path,
         save_all=True,
         append_images=output_frames[1:],
-        duration=1000/12,  # 12 fps
+        duration=1000/12,
         loop=0
     )
     
-    # Cleanup temporary files
+    # Cleanup
     Path(temp_gif).unlink()
     Path(temp_voxel).unlink()
+    if show_augmentations:
+        Path(temp_aug).unlink()
+    
     print(f"Saved to {output_path}")
+
 
 if __name__ == "__main__":
     # Example usage
@@ -358,4 +415,4 @@ if __name__ == "__main__":
     annotation_file = "objaverse_data/annotations.json"
     output_path = "comparison.gif"
     
-    create_comparison_visualization(glb_path, voxel_path, annotation_file, output_path)
+    create_comparison_visualization(glb_path, voxel_path, annotation_file, output_path, show_augmentations=True)

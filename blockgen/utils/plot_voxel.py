@@ -1,3 +1,7 @@
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+
 def plot_voxel_tensor(tensor: torch.Tensor, threshold: float = 0.5):
     """Create matplotlib visualization of voxel tensor."""
     # Convert tensor to numpy and handle RGBA vs occupancy
