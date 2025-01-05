@@ -138,6 +138,92 @@ class DiffusionInference3D:
             encoder_hidden_states = self.text_encoder(**text_inputs)[0]
         return encoder_hidden_states
 
+    def visualize_generation_pipeline(
+        self,
+        prompt: str,
+        shape_sample: torch.Tensor,
+        colored_sample: torch.Tensor,
+        save_path: Optional[str] = None
+    ):
+        """
+        Create a visualization showing the progression: Text -> Shape -> Colored Model
+        
+        Args:
+            prompt: The text prompt used for generation
+            shape_sample: The binary shape tensor [1, H, W, D] or [B, 1, H, W, D]
+            colored_sample: The final RGBA tensor [4, H, W, D] or [B, 4, H, W, D]
+            save_path: Optional path to save the visualization
+        """
+        
+        # Ensure we have the right shape
+        if shape_sample.dim() == 5:
+            shape_sample = shape_sample[0]
+        if colored_sample.dim() == 5:
+            colored_sample = colored_sample[0]
+        
+        # Create figure with extra space between subplots
+        fig = plt.figure(figsize=(16, 5))
+        plt.subplots_adjust(wspace=0.6, left=0.05, right=0.95, top=0.85, bottom=0.15)
+    
+        # 1) Text prompt
+        ax1 = fig.add_subplot(131)
+        ax1.text(
+            0.5, 0.5, f'"{prompt}"', 
+            horizontalalignment='center',
+            verticalalignment='center',
+            wrap=True,
+            fontsize=14
+        )
+        ax1.axis('off')
+    
+        # 2) Shape visualization
+        ax2 = fig.add_subplot(132, projection='3d')
+        shape_occupancy = (shape_sample[0] > 0.5).cpu().numpy()
+        ax2.voxels(shape_occupancy, edgecolor='k', alpha=0.5)
+        ax2.view_init(elev=30, azim=45)
+        ax2.set_title("Generated Shape")
+    
+        # 3) Color visualization
+        ax3 = fig.add_subplot(133, projection='3d')
+        occupancy = (colored_sample[3] > 0.5).cpu().numpy()
+        rgb = colored_sample[:3].cpu().numpy()
+    
+        # Create RGBA values for voxels
+        colors = np.zeros((*occupancy.shape, 4))
+        rgb_clipped = np.clip(rgb, 0, 1)  # Ensure RGB values are in [0,1]
+        rgb_hwdc = np.moveaxis(rgb_clipped, 0, -1)  # [H, W, D, 3]
+        colors[..., :3] = rgb_hwdc
+        colors[..., 3] = occupancy.astype(float)
+    
+        ax3.voxels(occupancy, facecolors=colors, edgecolor='k')
+        ax3.view_init(elev=30, azim=45)
+        ax3.set_title("Colored Model")
+        
+        # Arrow between "Text" and "Generated Shape" (lowered from y=0.50 to y=0.40)
+        plt.annotate(
+            '', xy=(0.31, 0.40), xytext=(0.26, 0.40),
+            xycoords='figure fraction', textcoords='figure fraction',
+            arrowprops=dict(arrowstyle='->', color='black', lw=1.5)
+        )
+        # Arrow between "Generated Shape" and "Colored Model" (same y shift)
+        plt.annotate(
+            '', xy=(0.66, 0.40), xytext=(0.61, 0.40),
+            xycoords='figure fraction', textcoords='figure fraction',
+            arrowprops=dict(arrowstyle='->', color='black', lw=1.5)
+        )
+    
+        # Stage labels
+        plt.figtext(0.32, 0.92, 'Stage 1', ha='center', va='top', fontsize=12)
+        plt.figtext(0.62, 0.92, 'Stage 2', ha='center', va='top', fontsize=12)
+    
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+
+
+
     def sample(self, prompt, num_samples=8, image_size=(32, 32, 32), show_intermediate=False, guidance_scale=7.0, use_mean_init=False, py3d=True, use_rotations=True):
         with torch.no_grad():
             do_class_guidance = guidance_scale > 1.0
@@ -212,7 +298,8 @@ class DiffusionInference3D:
 
     def sample_two_stage(self, prompt, num_samples=8, image_size=(32, 32, 32), 
                     show_intermediate=False, guidance_scale=7.0, show_after_shape=False,
-                    color_guidance_scale=7.0, use_rotations=True, use_mean_init=False):
+                    color_guidance_scale=7.0, use_rotations=True, use_mean_init=False,
+                    save_pipeline_viz: Optional[str] = None):
         """
         Two-stage generation process: first shape, then color.
         
@@ -229,6 +316,7 @@ class DiffusionInference3D:
             color_guidance_scale: Classifier-free guidance scale for color generation
             use_rotations: Use rotational augmentation during sampling
             use_mean_init: Initialize with mean values instead of pure noise
+            save_pipeline_viz: Optional path to save visualization of the generation pipeline
         """
         if self.color_model is None:
             raise ValueError("Color model and scheduler required for two-stage sampling")
@@ -330,6 +418,15 @@ class DiffusionInference3D:
                     print(f"\nColor timestep: {t}")
                     self.visualize_samples(sample, threshold=0.5)
             
+            # Create pipeline visualization if requested
+            if save_pipeline_viz:
+                self.visualize_generation_pipeline(
+                    prompt=prompt,
+                    shape_sample=shape_occupancy,
+                    colored_sample=sample,
+                    save_path=save_pipeline_viz
+                )
+            
             return sample
 
     def _get_prediction_with_rotations(self, sample, t, encoder_hidden_states, model):
@@ -350,49 +447,6 @@ class DiffusionInference3D:
         # Average predictions
         return (pred1 + pred2 + pred3) / 3.0
 
-    def sample_ddim(self, prompt, num_samples=8, image_size=(32, 32, 32), num_inference_steps=50, show_intermediate=False, guidance_scale=7.0):
-        with torch.no_grad():
-            do_class_guidance = guidance_scale > 1.0
-            
-            num_channels = self.model.in_channels
-            sample = torch.randn(num_samples, num_channels, *image_size).to(self.device)
-            
-            encoder_hidden_states = self.encode_prompt([prompt] * num_samples)
-            if do_class_guidance:
-                encoder_hidden_states_uncond = self.encode_prompt([""] * num_samples)
-            
-            self.noise_scheduler.set_timesteps(num_inference_steps, device=self.device)
-            timesteps = self.noise_scheduler.timesteps
-
-            for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps)):
-                residual = self.model(
-                    sample, 
-                    t,
-                    encoder_hidden_states=encoder_hidden_states
-                ).sample
-
-                if do_class_guidance:
-                    residual_uncond = self.model(
-                        sample, 
-                        t,
-                        encoder_hidden_states=encoder_hidden_states_uncond
-                    ).sample
-                    
-                    residual = residual_uncond + guidance_scale * (residual - residual_uncond)
-
-                alpha_prod_t = self.noise_scheduler.alphas_cumprod[t]
-                beta_prod_t = 1 - alpha_prod_t
-                pred_original_sample = (sample - beta_prod_t**0.5 * residual) / (alpha_prod_t ** 0.5)
-                
-                if show_intermediate:
-                    print(f"timestep: {t}")
-                    self.visualize_samples(sample, threshold=0.5)
-                    self.visualize_samples(pred_original_sample, threshold=0.5)
-
-                sample = self.noise_scheduler.step(residual, t, sample).prev_sample
-
-            return sample
-
     def visualize_samples(self, samples, threshold=0.5):
         """
         Visualize samples with 2D and 3D views.
@@ -403,13 +457,12 @@ class DiffusionInference3D:
                     C=4 for color stage (RGB + alpha/occupancy)
             threshold: Binary occupancy threshold (default 0.5)
         """
+        # Convert to numpy and handle single sample case
         samples_ = samples.cpu().numpy()
+        if len(samples_.shape) == 4:  # Single sample [C, H, W, D]
+            samples_ = samples_[np.newaxis, ...]  # Add batch dim [1, C, H, W, D]
         
-        # Convert single sample to list for consistent processing
-        if len(samples_.shape) == 4:  # Single sample case [C, H, W, D]
-            samples_ = samples_[np.newaxis, ...]  # Add batch dimension [1, C, H, W, D]
-            
-        # Setup plots with correct handling for single/multiple samples
+        # Setup plots
         num_samples = len(samples_)
         if num_samples == 1:
             fig, axs = plt.subplots(2, 1, figsize=(6, 10))
@@ -417,40 +470,33 @@ class DiffusionInference3D:
         else:
             fig, axs = plt.subplots(2, num_samples, figsize=(4*num_samples, 8))
         
-        for i, sample in enumerate(samples_):
-            if sample.shape[0] > 1:  # RGBA case
-                # Get binary occupancy first
-                occupancy = (sample[3] > threshold).astype(bool)  # [H, W, D]
-                rgb = np.clip(sample[:3], 0, 1)  # [3, H, W, D]
+        for i, sample in enumerate(samples_):  # sample shape: [C, H, W, D]
+            if sample.shape[0] > 1:  # RGBA case [4, 32, 32, 32]
+                # Get binary occupancy from alpha channel
+                occupancy = (sample[3] > threshold).astype(bool)  # [32, 32, 32]
+                rgb = np.clip(sample[:3], 0, 1)  # [3, 32, 32, 32]
                 
-                # Print detailed stats
+                # Print basic stats
                 print("\nSample Statistics:")
                 print("Occupancy:")
                 print(f"- Total voxels: {occupancy.size}")
                 print(f"- Occupied voxels: {np.sum(occupancy)} ({(np.sum(occupancy)/occupancy.size)*100:.2f}%)")
                 
-                print("\nColor Statistics (occupied voxels):")
-                # Per-channel stats for occupied voxels
-                for i_color, color in enumerate(['Red', 'Green', 'Blue']):
-                    channel = rgb[i_color]
-                    occupied_colors = channel[occupancy]
-                    print(f"\n{color} Channel:")
-                    print(f"- Range: [{occupied_colors.min():.3f}, {occupied_colors.max():.3f}]")
-                    print(f"- Mean: {occupied_colors.mean():.3f}")
-                    print(f"- Std: {occupied_colors.std():.3f}")
+                # Color dominance analysis
+                # Reshape RGB to [3, -1] and occupancy to [-1] for proper indexing
+                rgb_reshaped = rgb.reshape(3, -1)  # [3, 32*32*32]
+                occupancy_flat = occupancy.flatten()  # [32*32*32]
+                rgb_occupied = rgb_reshaped[:, occupancy_flat]  # Get colors of occupied voxels [3, N]
                 
-                # Overall color distribution
-                print("\nOverall RGB Statistics:")
-                print(f"- Mean intensity: {rgb[:, occupancy].mean():.3f}")
-                print(f"- Color variance: {rgb[:, occupancy].std():.3f}")
-                
-                # Distribution of colors
-                rgb_occupied = rgb[:, occupancy].T  # [N, 3] array of RGB values
-                dominant_colors = np.mean(rgb_occupied > 0.5, axis=0)
-                print("\nColor Distribution:")
-                print(f"- Dominant Red: {dominant_colors[0]*100:.1f}%")
-                print(f"- Dominant Green: {dominant_colors[1]*100:.1f}%")
-                print(f"- Dominant Blue: {dominant_colors[2]*100:.1f}%")
+                # Calculate color percentages
+                channel_means = rgb_occupied.mean(axis=1)  # Average per channel [3]
+                total = channel_means.sum()
+                if total > 0:  # Avoid division by zero
+                    color_percentages = (channel_means / total) * 100
+                    print("\nColor Dominance:")
+                    print(f"Red: {color_percentages[0]:.1f}%")
+                    print(f"Green: {color_percentages[1]:.1f}%")
+                    print(f"Blue: {color_percentages[2]:.1f}%")
                 
                 # 2D slice visualization
                 mid_depth = sample.shape[3] // 2

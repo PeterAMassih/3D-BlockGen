@@ -43,6 +43,14 @@ def evaluate_generation(
     )
     
     metrics_list = []
+    per_metric_values = {
+        'iou': [],
+        'f1': [],
+        'combined_score': []
+    }
+    if color_model:  # Add color metrics if using color model
+        per_metric_values['color_score'] = []
+    
     progress_bar = tqdm(test_files, desc="Generating samples", leave=True)
     
     for test_file in progress_bar:
@@ -75,40 +83,50 @@ def evaluate_generation(
         # Print current prompt
         print(f"\nCurrent prompt: {prompt}")
         
-        # Generate sample
-        if color_model:
-            samples = inferencer.sample_two_stage(
-                prompt=prompt,
-                num_samples=1,
-                image_size=(32, 32, 32),
-                guidance_scale=guidance_scale,
-                color_guidance_scale=color_guidance_scale,
-                show_intermediate=False,
-                use_rotations=use_rotations
+        try:
+            # Generate sample
+            if color_model:
+                samples = inferencer.sample_two_stage(
+                    prompt=prompt,
+                    num_samples=1,
+                    image_size=(32, 32, 32),
+                    guidance_scale=guidance_scale,
+                    color_guidance_scale=color_guidance_scale,
+                    show_intermediate=False,
+                    use_rotations=use_rotations
+                )
+            else:
+                samples = inferencer.sample(
+                    prompt=prompt,
+                    num_samples=1,
+                    image_size=(32, 32, 32),
+                    guidance_scale=guidance_scale,
+                    show_intermediate=False,
+                    use_rotations=use_rotations
+                )
+            
+            # Load target and compute metrics
+            target = torch.load(test_file)
+            metrics = compute_metrics(samples[0], target)
+            
+            # Store metrics in their respective lists
+            for key, value in metrics.items():
+                if key in per_metric_values:
+                    per_metric_values[key].append(value)
+            
+            # Update progress bar description with metrics
+            progress_bar.set_description(
+                " | ".join([f"{k}: {v:.3f}" for k, v in metrics.items()])
             )
-        else:
-            samples = inferencer.sample(
-                prompt=prompt,
-                num_samples=1,
-                image_size=(32, 32, 32),
-                guidance_scale=guidance_scale,
-                show_intermediate=False,
-                use_rotations=use_rotations
-            )
-        
-        # Load target and compute metrics
-        target = torch.load(test_file)
-        metrics = compute_metrics(samples[0], target)
-        metrics_list.append(metrics)
-        
-        # Update progress bar description with metrics only
-        progress_bar.set_description(
-            " | ".join([f"{k}: {v:.3f}" for k, v in metrics.items()])
-        )
+            
+        except Exception as e:
+            print(f"\nError processing {test_file}: {str(e)}")
+            continue
     
-    # Compute average metrics
+    # Compute average metrics only for metrics that have values
     avg_metrics = {}
-    for key in metrics_list[0].keys():
-        avg_metrics[key] = sum(m[key] for m in metrics_list) / len(metrics_list)
+    for key, values in per_metric_values.items():
+        if values:  # Only compute average if we have values
+            avg_metrics[key] = sum(values) / len(values)
     
     return avg_metrics
