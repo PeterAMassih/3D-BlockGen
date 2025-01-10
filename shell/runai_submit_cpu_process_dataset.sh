@@ -9,7 +9,7 @@ CLUSTER_GROUP_ID="11227"  # Your epfl GID
 #MY_IMAGE="ic-registry.epfl.ch/ivrl/ubuntu20-base" 
 #MY_IMAGE="ic-registry.epfl.ch/ivrl/pytorch1.10:cuda11.3"
 #MY_IMAGE="ic-registry.epfl.ch/ivrl/datascience-python"
-MY_IMAGE="peteram/blockgen:cuda11.7v2"
+MY_IMAGE="peteram/blockgen:cuda11.7v3"
 
 echo "Job [$arg_job_name]"
 

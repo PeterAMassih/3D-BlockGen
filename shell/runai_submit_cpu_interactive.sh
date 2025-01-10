@@ -1,4 +1,4 @@
-arg_job_name="pabdel-gpu-int"
+arg_job_name="pabdel-cpu-int"
 
 CLUSTER_USER="pabdel" # Your epfl username.
 CLUSTER_USER_ID="226664"  # Your epfl UID.
@@ -16,12 +16,11 @@ echo "Job [$arg_job_name]"
 runai submit $arg_job_name \
   -i $MY_IMAGE \
   -p ivrl-pabdel \
-  --preemptible \
   --interactive \
-  --cpu 8 --cpu-limit 14 \
-  --memory 50G --memory-limit 100G \
-  --gpu 1 \
-  --node-pools g10 \
+  --cpu 10 --cpu-limit 14 \
+  --memory 100G --memory-limit 100G \
+  --gpu 0 \
+  --node-pools g9 \
   --allow-privilege-escalation \
   --pvc runai-ivrl-pabdel-scratch:/scratch \
   --large-shm \

@@ -37,7 +37,7 @@ The project implements a two-stage diffusion model (and other architecture but t
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/3D-BlockGen.git
+git clone https://github.com/PeterAMassih/3D-BlockGen
 cd 3D-BlockGen
 
 # Install dependencies
@@ -47,6 +47,8 @@ pip install -e .
 # Install PyTorch3D (for visualization)
 pip install pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu117_pyt201/download.html
 ```
+
+You could also use the image that we created at "peteram/blockgen:cuda11.7v3"
 
 ## Data Pipeline
 
@@ -87,12 +89,7 @@ python scripts/train.py \
 
 ## Inference
 
-Generate 3D models from text:
-```bash
-python scripts/generate.py \
-    --prompt "A castle tower" \
-    --num_samples 4
-```
+Best way to run inference would be to follow run.ipynb
 
 Convert to LEGO:
 ```bash
@@ -119,7 +116,7 @@ python scripts/legolize.py \
 │   │   └── trainer.py             # Training loop implementation
 │   ├── inference/
 │   │   └── inference.py           # Generation and visualization
-│   └── utils/                     # Utility functions
-├── scripts/                       # Training and processing scripts
-└── tests/                         # Unit tests
+│   └── utils/                     # Utility functions such as evaluation, metrics and data_loader
+├── scripts/                       # Training, processing, data visualization and finetuning scripts
+└── tests/                         # Unit tests - Not pushed
 ```
