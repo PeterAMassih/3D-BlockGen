@@ -1,0 +1,19 @@
+torch
+torchvision
+matplotlib
+numpy
+tqdm
+diffusers==0.31.0
+transformers
+accelerate
+scipy
+scikit-learn
+pandas
+trimesh
+objaverse
+wandb
+datasets
+iopath
+
+# also install this
+# pip install --no-deps --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu117_pyt201/download.html
