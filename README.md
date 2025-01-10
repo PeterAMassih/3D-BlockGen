@@ -40,7 +40,7 @@ pip install --no-deps --no-index --no-cache-dir pytorch3d -f \
 
 ## Pretrained Models
 
-Download our pretrained models from [Google Drive](https://drive.google.com/drive/folders/1xyz...) and place them in their respective directories:
+Download our pretrained models from [Google Drive](https://drive.google.com/drive/folders/1BN4F55P6b_sMKyuQeRK4L0LTI1HoIfS_?usp=sharing) and place them in their respective directories (this contains the best models for shape/color):
 
 - Base Shape Model → `runs/experiment_two_stage/shape/best_model/`
 - Base Color Model → `runs/experiment_two_stage/color/best_model/`
@@ -56,6 +56,8 @@ mkdir -p runs/finetune/shape/best_model/
 ## Usage
 
 ### Data
+
+Due to the big size of the data, the finetuning and base dataset are not available as is but through huggingface (which has a different format due to not having the choice for a same column with different datatypes in the dataset). Example of scripts are presents on huggingface to compensate and know how to load the data and use it in our code (requires minor tweaking). The evaluation dataset on the other hand is made available from [Google Drive](https://drive.google.com/drive/folders/1K7vYEpENUHsa1vttXRD8q2S5Sr-5TYFy?usp=sharing). Another way would be to process your own data but that would require 2.1T of disk storage for the main data not voxelized (vs 4.34 GB on huggingface after voxelization).
 
 #### Pre-processed Datasets
 Available on Hugging Face:
@@ -142,6 +144,8 @@ bash scripts/finetune.sh
 
 #### Interactive Notebook (Recommended)
 Use `run.ipynb` for an interactive generation experience with visualizations and generation options.
+
+`results.ipynb` contains the code used for the ablations study, some visualization and results for the report
 
 #### Inference Parameters
 
