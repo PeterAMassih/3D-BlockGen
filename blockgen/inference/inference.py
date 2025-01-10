@@ -318,7 +318,7 @@ class DiffusionInference3D:
 
     def sample(self, prompt, num_samples=8, image_size=(32, 32, 32), show_intermediate=False, guidance_scale=7.0,
                use_mean_init=False, py3d=True, use_rotations=True, save_diffusion_process: bool = False,
-               diffusion_steps_to_save: list[int] = None):
+               diffusion_steps_to_save: list[int] = None, disable_progress_bar: bool = False):
 
         with torch.no_grad():
             do_class_guidance = guidance_scale > 1.0
@@ -348,7 +348,7 @@ class DiffusionInference3D:
             intermediates = []
             saved_timesteps = []
 
-            for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps)):
+            for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps), disable=disable_progress_bar):
                 # Get conditioned prediction
                 if use_rotations:
                     residual = self._get_prediction_with_rotations(sample, t, encoder_hidden_states, self.model)
@@ -402,7 +402,7 @@ class DiffusionInference3D:
                          show_intermediate=False, guidance_scale=7.0, show_after_shape=False,
                          color_guidance_scale=7.0, use_rotations=True, use_mean_init=False,
                          save_pipeline_viz: Optional[str] = None, save_diffusion_process: bool = False,
-                         diffusion_steps_to_save: list[int] = None):
+                         diffusion_steps_to_save: list[int] = None, disable_progress_bar: bool = False):
         """
         Two-stage generation process: first shape, then color.
         
@@ -438,8 +438,9 @@ class DiffusionInference3D:
                     use_rotations=use_rotations,
                     use_mean_init=use_mean_init,
                     save_diffusion_process=True,
-                    diffusion_steps_to_save=diffusion_steps_to_save
-                )  # Output: [B, 1, H, W, D]
+                    diffusion_steps_to_save=diffusion_steps_to_save,
+                    disable_progress_bar=disable_progress_bar  # Pass through parameter
+                )
             else:
                 shape_samples = self.sample(
                     prompt=prompt,
@@ -448,7 +449,8 @@ class DiffusionInference3D:
                     show_intermediate=show_intermediate,
                     guidance_scale=guidance_scale,
                     use_rotations=use_rotations,
-                    use_mean_init=use_mean_init
+                    use_mean_init=use_mean_init,
+                    disable_progress_bar=disable_progress_bar  # Pass through parameter
                 )
 
             # Convert to binary occupancy
@@ -487,7 +489,7 @@ class DiffusionInference3D:
             timesteps = self.color_noise_scheduler.timesteps.to(self.device)
             sample = noise
 
-            for t in tqdm(timesteps, desc="Color Sampling"):
+            for t in tqdm(timesteps, desc="Color Sampling", disable=disable_progress_bar):
                 # Get color prediction (model outputs RGB noise)
                 if use_rotations:
                     residual = self._get_prediction_with_rotations(
