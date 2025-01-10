@@ -224,7 +224,7 @@ Core components:
 ## Citation
 
 ```bibtex
-@misc{massih2024blockgen,
+@misc{massih2025blockgen,
     title={3D-BlockGen: Generating Brick-Compatible 3D Models Using Diffusion Models},
     author={Peter A. Massih},
     year={2025},
