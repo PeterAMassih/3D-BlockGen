@@ -176,8 +176,8 @@ If lost use help of python/scripts/generate.py for all args possible
 ```bash
 python scripts/generate.py \
     --mode two_stage \
-    --shape_model_path runs/experiment_two_stage/shape/best_model \
-    --color_model_path runs/experiment_two_stage/color/best_model \
+    --shape_model_path runs/experiment_two_stage/shape/best_model/model \ # This should be the model path up to the directory with the ema and main models, our script will handle adding _ema and _main for the respective ema and main models
+    --color_model_path runs/experiment_two_stage/color/best_model/model \
     --prompt "a red apple" \
     --guidance_scale 20.0 \
     --color_guidance_scale 20.0
