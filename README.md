@@ -1,42 +1,30 @@
-# 3D-BlockGen
+# 3D-BlockGen: Text-to-3D Generation Using Diffusion Models
 
-This project explores the use of diffusion models to automatically generate 3D building block designs, such as LEGO®️, conditioned on textual descriptions. Traditional tools for creating 3D brick models are manual and time-consuming, and this project aims to automate the process by leveraging deep learning generative models.
+3D-BlockGen is a deep learning framework that generates LEGO®-compatible 3D models from text descriptions. The project addresses the time-consuming nature of manual brick design by automating the generation process using a two-stage diffusion model pipeline.
 
 ## Features
 
-- **Two-Stage Diffusion Model**: Separate models for shape and color generation
-- **Text-Conditioned Generation**: Generate 3D models from textual descriptions using CLIP embeddings
-- **Voxel-Based Representation**: 32³ voxel grid with RGBA channels
-- **LEGO Conversion**: Automatic conversion of voxel models to LEGO brick designs
-- **Data Augmentation**: Rotational augmentations for improved training
-- **Experiment Tracking**: Integration with Weights & Biases for experiment monitoring
-
-## Architecture
-
-The project implements a two-stage diffusion model (and other architecture but this is the one with the better results):
-
-1. **Shape Stage**: 
-   - Input: Text prompt
-   - Output: Binary occupancy grid (1 channel)
-   - Purpose: Generate the basic 3D shape
-
-2. **Color Stage**:
-   - Input: Text prompt + shape from first stage
-   - Output: RGB colors for occupied voxels
-   - Purpose: Add colors to the generated shape
-
-### Core Components
-
-- **Diffusion Model**: Modified UNet3D architecture with cross-attention for text conditioning
-- **Text Encoder**: CLIP text encoder for converting prompts to embeddings
-- **Voxel Format**: RGBA format [4, 32, 32, 32] where:
-  - First 3 channels: RGB colors
-  - Last channel: Binary occupancy mask
+- Text-to-3D generation using CLIP embeddings
+- Two-stage diffusion pipeline (shape then color)
+- RGBA voxel representation (32³ resolution)
+- Automated LEGO® brick conversion
+- Rotational data augmentation
+- Comprehensive experiment tracking using Weights & Biases
 
 ## Installation
 
+### Option 1: Docker (Recommended)
+
 ```bash
-# Clone the repository
+docker pull peteram/blockgen:cuda11.7v3
+docker run --gpus all -it peteram/blockgen:cuda11.7v3
+```
+
+OR use this image from creating a running pod
+
+### Option 2: Manual Installation
+
+```bash
 git clone https://github.com/PeterAMassih/3D-BlockGen
 cd 3D-BlockGen
 
@@ -44,42 +32,100 @@ cd 3D-BlockGen
 pip install -r requirements.txt
 pip install -e .
 
-# Install PyTorch3D (for visualization)
-pip install pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu117_pyt201/download.html
+# Install PyTorch3D
+pip install iopath
+pip install --no-deps --no-index --no-cache-dir pytorch3d -f \
+    https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu117_pyt201/download.html
 ```
 
-You could also use the image that we created at "peteram/blockgen:cuda11.7v3"
+## Pretrained Models
 
-## Data Pipeline
+Download our pretrained models from [Google Drive](https://drive.google.com/drive/folders/1xyz...) and place them in their respective directories:
 
-1. **Data Download**:
+- Base Shape Model → `runs/experiment_two_stage/shape/best_model/`
+- Base Color Model → `runs/experiment_two_stage/color/best_model/`
+- Finetuned Shape Model → `runs/finetune/shape/best_model/`
+
 ```bash
+# Create directories for models
+mkdir -p runs/experiment_two_stage/shape/best_model/
+mkdir -p runs/experiment_two_stage/color/best_model/
+mkdir -p runs/finetune/shape/best_model/
+```
+
+## Usage
+
+### Data
+
+#### Pre-processed Datasets
+Available on Hugging Face:
+- [3D-BlockGen Base Dataset](https://huggingface.co/datasets/peteram/3d-blockgen) - 542,292 processed models from Objaverse
+- [3D-BlockGen Finetuning Dataset](https://huggingface.co/datasets/peteram/3d-blockgen-finetune) - 111,464 processed from Objaverse non augmented
+
+Each dataset contains:
+- Voxelized models (32³ resolution)
+- Shape tensors [1, 32, 32, 32] for occupancy 
+- RGB tensors [3, 32, 32, 32] for colors
+- 4 versions per model (original + 3 rotated augmentations) - Only Base dataset
+
+#### Process Your Own Data
+
+1. Base Dataset Creation:
+```bash
+# Download raw models from Objaverse
 python scripts/download_dataset.py
+
+# Voxelize and process models
+python scripts/process_dataset.py \
+    --input_dir objaverse_data \ # annotations.json is created here for prompts
+    --output_dir objaverse_data_voxelized \
+    --resolution 32
 ```
 
-2. **Data Processing**:
+2. Finetuning Dataset Creation:
 ```bash
-python scripts/process_dataset.py
+# Download specific classes from Objaverse-LVIS
+python scripts/download_dataset_finetune.py
+
+# Process finetuning dataset
+python scripts/process_dataset.py \
+    --input_dir objaverse_finetune \ # file_to_label_map.json will be created here for prompts
+    --output_dir objaverse_finetune_voxelized \
+    --resolution 32
 ```
 
-This creates:
-- Voxelized 3D models (32³ resolution)
-- 4 versions per model (original + 3 rotated augmentations)
-- RGBA format with binary occupancy mask
+#### Dataset Format
+The voxelized data follows this structure:
+```
+dataset_dir/
+├── hf-objaverse-v1/
+│   └── glbs/
+│       ├── 000-000/
+│       │   ├── model_id.pt         # Original model
+│       │   ├── model_id_aug1.pt    # 90° X-axis rotation
+│       │   ├── model_id_aug2.pt    # 90° Y-axis rotation
+│       │   └── model_id_aug3.pt    # 90° Z-axis rotation
+│       └── ...
+└── annotations.json                # Model metadata and prompts
+```
 
-## Training
-
-The training process consists of two stages:
-
-1. **Shape Stage**:
+For uploading to Hugging Face:
 ```bash
-python scripts/train.py \
-    --mode two_stage \
-    --stage shape \
-    --wandb_key YOUR_WANDB_KEY
+python scripts/huggingface_dataset.py \
+    --dataset_path path/to/voxelized/data \
+    --annotation_path path/to/annotations.json \
+    --repo_id your-username/dataset-name \
+    --token YOUR_HF_TOKEN
 ```
 
-2. **Color Stage**:
+### Training
+
+1. Shape Stage:
+```bash
+bash scripts/train.sh
+```
+
+2. Color Stage:
 ```bash
 python scripts/train.py \
     --mode two_stage \
@@ -87,36 +133,107 @@ python scripts/train.py \
     --wandb_key YOUR_WANDB_KEY
 ```
 
-## Inference
-
-Best way to run inference would be to follow run.ipynb
-
-Convert to LEGO:
+3. Optional: Finetuning
 ```bash
+bash scripts/finetune.sh
+```
+
+### Generation
+
+#### Interactive Notebook (Recommended)
+Use `run.ipynb` for an interactive generation experience with visualizations and generation options.
+
+#### Inference Parameters
+
+1. **Guidance Scale Control**:
+   - Shape guidance (--guidance_scale): Controls shape fidelity
+   - Color guidance (--color_guidance_scale): Controls color fidelity
+   - Range: 10.0 to 30.0 (default: 20.0)
+   - Higher values: More prompt-faithful generations
+   - Lower values: More diverse generations
+
+2. **Generation Strategies**:
+   - Rotation-augmented sampling (--use_rotations): Averages predictions across rotations
+   - Mean initialization (--use_mean_init): Starts from 0.5 instead of random noise
+3. **EMA**:
+    - Exponential moving average of the weights for weight stability. (--use_ema)
+4. **DDIM**:
+    --use_ddim with --inference_step
+
+If lost use help of python/scripts/generate.py for all args possible
+
+#### Command Line Examples
+
+1. Basic Generation:
+```bash
+python scripts/generate.py \
+    --mode two_stage \
+    --shape_model_path runs/experiment_two_stage/shape/best_model \
+    --color_model_path runs/experiment_two_stage/color/best_model \
+    --prompt "a red apple" \
+    --guidance_scale 20.0 \
+    --color_guidance_scale 20.0
+
+# Convert to LEGO design
 python scripts/legolize.py \
     --input generated.pt \
-    --output lego_model.png
+    --output lego_design.png
 ```
+
+## Architecture
+
+The framework uses a two-stage diffusion model:
+
+1. **Shape Stage**
+   - Input: Text prompt → CLIP embedding
+   - Output: Binary occupancy grid [1, 32, 32, 32]
+   - Purpose: Basic 3D shape generation
+
+2. **Color Stage**
+   - Input: Text prompt + shape mask
+   - Output: RGB colors for occupied voxels
+   - Final output: RGBA tensor [4, 32, 32, 32]
+
+Core components:
+- Modified UNet3D with cross-attention
+- CLIP text encoder for conditioning
+- Custom voxelization pipeline
+- LEGO brick conversion algorithm
 
 ## Project Structure
 
 ```
 3D-BlockGen/
 ├── blockgen/
-│   ├── configs/
-│   │   ├── diffusion_config.py    # Training configuration
-│   │   └── voxel_config.py        # Voxel processing settings
-│   ├── data/
-│   │   ├── dataset.py             # Dataset implementation
-│   │   └── processing/            # Data processing utilities
-│   ├── models/
-│   │   ├── diffusion.py           # Diffusion model implementation
-│   │   └── losses.py              # Loss functions
-│   ├── trainers/
-│   │   └── trainer.py             # Training loop implementation
-│   ├── inference/
-│   │   └── inference.py           # Generation and visualization
-│   └── utils/                     # Utility functions such as evaluation, metrics and data_loader
-├── scripts/                       # Training, processing, data visualization and finetuning scripts
-└── tests/                         # Unit tests - Not pushed
+│   ├── configs/           # Configuration classes
+│   ├── data/              # Dataset and processing
+│   ├── models/            # Model implementations
+│   ├── trainers/          # Training logic
+│   ├── inference/         # Generation pipeline
+│   └── utils/             # Utility functions
+├── scripts/               # Training & processing scripts
+├── requirements.txt       # Dependencies
+├── run.ipynb              # Main running script
+└── report.pdf             # Report on findings and viz
 ```
+
+## Citation
+
+```bibtex
+@misc{massih2024blockgen,
+    title={3D-BlockGen: Generating Brick-Compatible 3D Models Using Diffusion Models},
+    author={Peter A. Massih},
+    year={2025},
+    howpublished={EPFL Image and Visual Representation Lab Master Project}
+}
+```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- EPFL Image and Visual Representation Lab
+- Supervisors: Martin Nicolas Everaert, Eric Bezzam
+- Professor: Sabine Süsstrunk
