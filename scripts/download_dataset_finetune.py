@@ -3,6 +3,7 @@ import os
 import json
 import shutil
 
+
 def main():
     # Step 1: Load LVIS annotations
     print("Loading LVIS annotations...")
@@ -61,6 +62,7 @@ def main():
         print(f"Mapping file saved to '{mapping_file}'.")
 
     print(f"Downloaded and processed {len(file_to_label_map)} objects in total.")
+
 
 if __name__ == '__main__':
     main()

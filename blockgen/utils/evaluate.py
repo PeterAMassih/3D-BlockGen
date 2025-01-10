@@ -10,18 +10,19 @@ from ..inference.inference import DiffusionInference3D
 from .metrics import compute_metrics
 from ..models.diffusion import DiffusionModel3D
 
+
 def evaluate_generation(
-    model: DiffusionModel3D,  # Primary model (either combined RGBA or shape model)
-    model_type: str,  # 'combined' or 'two_stage'
-    test_data_dir: str,
-    annotation_file: str,
-    color_model: Optional[DiffusionModel3D] = None,  # Only for two_stage
-    num_eval_samples: int = 100,
-    guidance_scale: float = 7.0,
-    color_guidance_scale: float = 7.0,
-    use_rotations: bool = False,
-    use_mean_init: bool = False,
-    device: str = 'cuda'
+        model: DiffusionModel3D,  # Primary model (either combined RGBA or shape model)
+        model_type: str,  # 'combined' or 'two_stage'
+        test_data_dir: str,
+        annotation_file: str,
+        color_model: Optional[DiffusionModel3D] = None,  # Only for two_stage
+        num_eval_samples: int = 100,
+        guidance_scale: float = 7.0,
+        color_guidance_scale: float = 7.0,
+        use_rotations: bool = False,
+        use_mean_init: bool = False,
+        device: str = 'cuda'
 ) -> Dict:
     """
     Evaluate model generation quality.
@@ -40,18 +41,18 @@ def evaluate_generation(
     """
     if model_type not in ['combined', 'two_stage']:
         raise ValueError("model_type must be either 'combined' or 'two_stage'")
-        
+
     if model_type == 'two_stage' and color_model is None:
         raise ValueError("color_model must be provided when model_type is 'two_stage'")
-    
+
     # Load annotations
     with open(annotation_file, 'r') as f:
         annotations = json.load(f)
-    
+
     # Get test files (excluding augmentations)
     test_files = [p for p in Path(test_data_dir).rglob("*.pt") if "_aug" not in p.stem][:num_eval_samples]
     print(f"Evaluating {len(test_files)} samples")
-    
+
     # Create inferencer based on model type
     if model_type == 'combined':
         inferencer = DiffusionInference3D(
@@ -67,7 +68,7 @@ def evaluate_generation(
             color_noise_scheduler=color_model.noise_scheduler,
             device=device
         )
-    
+
     # Initialize metrics tracking
     per_metric_values = {
         'iou': [],
@@ -75,20 +76,20 @@ def evaluate_generation(
         'color_score': [],  # Always track color for both types
         'combined_score': []
     }
-    
+
     progress_bar = tqdm(test_files, desc="Generating samples", leave=True)
-    
+
     for test_file in progress_bar:
         model_id = test_file.stem
-        
+
         # Create prompt matching dataset format
         if model_id in annotations:
             name = annotations[model_id].get('name', 'an object')
-            categories = [cat.get('name', '') for cat in annotations[model_id].get('categories', []) 
-                        if isinstance(cat, dict)]
-            tags = [tag.get('name', '') for tag in annotations[model_id].get('tags', []) 
-                   if isinstance(tag, dict)]
-            
+            categories = [cat.get('name', '') for cat in annotations[model_id].get('categories', [])
+                          if isinstance(cat, dict)]
+            tags = [tag.get('name', '') for tag in annotations[model_id].get('tags', [])
+                    if isinstance(tag, dict)]
+
             prompt_parts = [name]
             if categories:
                 prompt_parts.append(', '.join(categories))
@@ -97,9 +98,9 @@ def evaluate_generation(
             prompt = ' '.join(prompt_parts)
         else:
             prompt = "an object"
-        
+
         print(f"\nCurrent prompt: {prompt}")
-        
+
         try:
             # Generate sample based on model type
             if model_type == 'combined':
@@ -123,30 +124,30 @@ def evaluate_generation(
                     use_rotations=use_rotations,
                     use_mean_init=use_mean_init
                 )
-            
+
             # Compute metrics
             target = torch.load(test_file)
             metrics = compute_metrics(samples[0], target)
-            
+
             # Store metrics
             for key, value in metrics.items():
                 if key in per_metric_values:
                     per_metric_values[key].append(value)
-            
+
             # Update progress display
             progress_bar.set_description(
                 " | ".join([f"{k}: {v:.3f}" for k, v in metrics.items()])
             )
-            
+
         except Exception as e:
             print(f"\nError processing {test_file}: {str(e)}")
             continue
-    
+
     # Compute averages
     avg_metrics = {
-        key: sum(values) / len(values) 
-        for key, values in per_metric_values.items() 
+        key: sum(values) / len(values)
+        for key, values in per_metric_values.items()
         if values
     }
-    
+
     return avg_metrics

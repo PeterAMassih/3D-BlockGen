@@ -1,3 +1,6 @@
+# blockgen/scripts/process_dataset.py
+# This script processes a dataset of 3D models in GLB format by voxelizing them and saving the results.
+
 from pathlib import Path  # Import Path before using it
 import json
 import traceback
@@ -12,6 +15,7 @@ from contextlib import contextmanager
 # Silence warnings
 warnings.filterwarnings("ignore")
 import torchvision
+
 torchvision.disable_beta_transforms_warning()
 
 # Configure logging
@@ -20,22 +24,27 @@ logger = logging.getLogger(__name__)
 
 # Import and create global voxelizer
 from blockgen.data.processing.data_voxelization import VoxelizerWithAugmentation
+
 VOXELIZER = None
+
 
 # Timeout context manager
 class TimeoutException(Exception):
     pass
 
+
 @contextmanager
 def timeout(seconds: int):
     def _handle_timeout(signum, frame):
         raise TimeoutException("Timeout exceeded during processing")
+
     signal.signal(signal.SIGALRM, _handle_timeout)
     signal.alarm(seconds)
     try:
         yield
     finally:
         signal.alarm(0)
+
 
 def process_single_file(glb_file: Path, input_dir: Path, output_dir: Path, resolution: int) -> tuple[bool, str]:
     """Process a single GLB file with detailed logging and memory management."""
@@ -44,31 +53,31 @@ def process_single_file(glb_file: Path, input_dir: Path, output_dir: Path, resol
 
     try:
         logger.debug(f"Starting to process {glb_file}")
-        
+
         # Initialize voxelizer if needed
         if VOXELIZER is None:
             logger.debug("Creating voxelizer instance...")
             VOXELIZER = VoxelizerWithAugmentation(resolution=resolution)
-        
+
         # Process mesh with timeout
         with timeout(60):  # Timeout after 60 seconds
             results = VOXELIZER.process_mesh(str(glb_file))
-        
+
         if not results:
             return False, "No results generated"
-        
+
         # Save results
         logger.debug("Saving results...")
         relative_path = glb_file.relative_to(input_dir)
         save_dir = output_dir / relative_path.parent
         save_dir.mkdir(parents=True, exist_ok=True)
-        
+
         for i, tensor in enumerate(results):
             suffix = "" if i == 0 else f"_aug{i}"
             save_path = save_dir / f"{relative_path.stem}{suffix}.pt"
             torch.save(tensor, save_path)
             del tensor  # Free memory
-        
+
         return True, None
 
     except TimeoutException as e:
@@ -84,6 +93,7 @@ def process_single_file(glb_file: Path, input_dir: Path, output_dir: Path, resol
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+
 def load_processing_log(log_file: Path) -> tuple[dict, set, set]:
     """Load or initialize the processing log with error handling."""
     if log_file.exists():
@@ -97,6 +107,7 @@ def load_processing_log(log_file: Path) -> tuple[dict, set, set]:
             logger.error(f"Error loading log file: {e}. Starting fresh.")
     return {"processed": [], "permanent_failures": []}, set(), set()
 
+
 def save_log(log_file: Path, log_data: dict):
     """Save log with error handling."""
     try:
@@ -104,6 +115,7 @@ def save_log(log_file: Path, log_data: dict):
             json.dump(log_data, f, indent=2)
     except Exception as e:
         logger.error(f"Error saving log: {e}")
+
 
 def process_dataset(input_dir: str, output_dir: str, resolution: int = 32):
     """Process dataset with improved memory management and logging."""
@@ -195,10 +207,11 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32):
         logger.info(f"Successfully processed: {processed_count}")
         logger.info(f"Failed: {failed_count}")
 
+
 if __name__ == "__main__":
     input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/evaluation_set"
     output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/evaluation_set_voxelized"
-    
+
     try:
         process_dataset(
             input_dir=input_dir,

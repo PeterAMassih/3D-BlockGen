@@ -1,3 +1,14 @@
+"""
+This script contains utilities for processing 3D meshes and voxelization,
+including color-aware voxelization and data augmentation.
+
+The `voxelize_with_color` function is adapted from the `subdivide_to_size`
+algorithm in the trimesh repository. It integrates color handling and
+voxelization tailored for use in the BlockGen project.
+
+File: blockgen/data/processing/data_voxelization.py
+"""
+
 import numpy as np
 import trimesh
 import torch
@@ -125,6 +136,7 @@ class VoxelizerWithAugmentation:
                 mesh = trimesh.util.concatenate(meshes)
             else:
                 mesh = meshes[0]
+        
         # Handle case where mesh is a scene
         elif isinstance(mesh, trimesh.Scene):
             meshes = []

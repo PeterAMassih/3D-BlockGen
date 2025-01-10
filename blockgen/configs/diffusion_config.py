@@ -2,8 +2,10 @@ import torch
 import numpy as np
 import random
 
+
 class DiffusionConfig:
     """Configuration for diffusion model training"""
+
     def __init__(self,
                  num_timesteps: int = 1000,
                  use_ema: bool = False,
@@ -19,7 +21,7 @@ class DiffusionConfig:
         self.ema_device = ema_device
         self.use_ddim = use_ddim  # Added this attribute
         self.seed = seed
-        
+
         if seed is not None:
             # Set main seeds
             torch.manual_seed(seed)

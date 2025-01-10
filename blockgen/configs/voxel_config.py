@@ -2,11 +2,13 @@ import torch
 import torch.nn as nn
 from ..models.losses import RGBALoss, ColorStageLoss
 
+
 class VoxelConfig:
     """Configuration for voxel processing"""
-    def __init__(self, 
+
+    def __init__(self,
                  mode: str = 'shape',  # 'shape', 'combined', or 'two_stage'
-                 stage: str = None,     # For two_stage: 'shape' or 'color'
+                 stage: str = None,  # For two_stage: 'shape' or 'color'
                  default_color: list = [0.5, 0.5, 0.5],
                  alpha_weight: float = 1.0,
                  rgb_weight: float = 1.0,
@@ -22,14 +24,14 @@ class VoxelConfig:
         """
         if mode not in ['shape', 'combined', 'two_stage']:
             raise ValueError("Mode must be 'shape', 'combined', or 'two_stage'")
-            
+
         if mode == 'two_stage' and stage not in ['shape', 'color']:
             raise ValueError("Stage must be 'shape' or 'color' in two_stage mode")
-            
+
         self.mode = mode
         self.stage = stage
         self.default_color = torch.tensor(default_color)
-        
+
         # Determine channels based on mode/stage
         if mode == 'shape':
             self.in_channels = 1
@@ -41,11 +43,11 @@ class VoxelConfig:
             else:  # color stage
                 self.in_channels = 4  # RGB + alpha mask
                 self.out_channels = 3  # Only predict RGB noise
-        
+
         self.alpha_weight = alpha_weight
         self.rgb_weight = rgb_weight
         self.use_simple_mse = use_simple_mse
-    
+
     def get_loss_fn(self, device: str) -> nn.Module:
         """Returns appropriate loss function based on mode"""
         if self.mode == 'shape':
@@ -68,7 +70,7 @@ class VoxelConfig:
                     rgb_weight=self.rgb_weight,
                     # no need for alpha_weight since we don't predict alpha
                 ).to(device)
-    
+
     def get_stage(self):
         """Determine the correct stage for logging based on mode and stage."""
         if self.mode == 'two_stage':

@@ -1,4 +1,6 @@
 # blockgen/data/processing/data_retrieval.py
+# This file was mostly taken from the objaverse github repository. It contains functions to load the metadata and download the objects from the dataset.
+
 import gzip
 import json
 import multiprocessing

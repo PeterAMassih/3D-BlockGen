@@ -3,6 +3,7 @@ from diffusers import DDPMScheduler, EMAModel, DDIMScheduler
 from ..configs.diffusion_config import DiffusionConfig
 import torch
 
+
 class DiffusionModel3D(nn.Module):
     def __init__(self, model: nn.Module, config: DiffusionConfig, mode: str = 'combined', stage: str = None):
         """
@@ -71,21 +72,23 @@ class DiffusionModel3D(nn.Module):
             # Shape or combined mode: Add noise to all channels
             return self.noise_scheduler.add_noise(clean_images, noise, timesteps)
 
-    def predict_original_sample(self, noisy_sample: torch.Tensor, noise_pred: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+    def predict_original_sample(self, noisy_sample: torch.Tensor, noise_pred: torch.Tensor,
+                                timesteps: torch.Tensor) -> torch.Tensor:
         """Predict original sample from noisy sample and predicted noise.
         
         Note: In color stage, this should be called only with RGB channels.
         """
         alpha_prod = self.noise_scheduler.alphas_cumprod[timesteps]  # [B]
         beta_prod = 1 - alpha_prod
-        
+
         # Use broadcasting: [B] -> [B, 1, 1, 1, 1]
         alpha_prod = alpha_prod.view(-1, 1, 1, 1, 1)
         beta_prod = beta_prod.view(-1, 1, 1, 1, 1)
-        
+
         return (noisy_sample - (beta_prod ** 0.5) * noise_pred) / (alpha_prod ** 0.5)
 
-    def forward(self, x: torch.Tensor, timesteps: torch.Tensor, encoder_hidden_states: torch.Tensor = None, return_dict: bool = True):
+    def forward(self, x: torch.Tensor, timesteps: torch.Tensor, encoder_hidden_states: torch.Tensor = None,
+                return_dict: bool = True):
         """Model forward pass"""
         return self.model(
             x,
@@ -121,7 +124,7 @@ class DiffusionModel3D(nn.Module):
             self.ema_model.copy_to(self.model.parameters())
         else:
             self.model = self.model.from_pretrained(f"{save_path}_main")
-    
+
     @property
     def in_channels(self):
         return self.model.config.in_channels

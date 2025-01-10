@@ -19,9 +19,9 @@ setup(
         "trimesh",
         "objaverse",
         "pytorch3d",  # Added for visualization
-        "pillow",     # Added for image processing
-        "imageio",    # Added for GIF creation
-        "iopath",     # Added for PyTorch3D
+        "pillow",  # Added for image processing
+        "imageio",  # Added for GIF creation
+        "iopath",  # Added for PyTorch3D
     ],
     python_requires=">=3.10",
 )
