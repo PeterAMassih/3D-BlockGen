@@ -2,6 +2,10 @@
 
 3D-BlockGen is a deep learning framework that generates LEGO®-compatible 3D models from text descriptions. The project addresses the time-consuming nature of manual brick design by automating the generation process using a two-stage diffusion model pipeline.
 
+## Report
+
+report of the project with all the findings are in report.pdf in the current directory
+
 ## Features
 
 - Text-to-3D generation using CLIP embeddings
