@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple, Dict, Union, Optional
 from pathlib import Path
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -197,16 +197,117 @@ class LegoConverter:
         size_counter = Counter(brick.size for brick in bricks)
         stats = {self.brick_names[size]: count for size, count in size_counter.items()}
         return stats
-
+    
+    def visualize_legolization(self, voxels: torch.Tensor, bricks: List[LegoBrick], save_path: Optional[str] = None):
+        """Create a side-by-side visualization showing voxel input and LEGO brick output."""
+        fig = plt.figure(figsize=(15, 6))
+        plt.subplots_adjust(wspace=0.4, left=0.05, right=0.95)
+    
+        # 1) Original voxels
+        ax1 = fig.add_subplot(121, projection='3d')
+        if voxels.shape[0] == 4:  # RGBA case
+            occupancy = (voxels[3] > 0.5).cpu().numpy()
+            rgb = voxels[:3].cpu().numpy()
+            
+            # Create RGBA values for voxels
+            colors = np.zeros((*occupancy.shape, 4))
+            rgb_clipped = np.clip(rgb, 0, 1)  # Ensure RGB values are in [0,1]
+            rgb_hwdc = np.moveaxis(rgb_clipped, 0, -1)  # [3, H, W, D] -> [H, W, D, 3]
+            colors[..., :3] = rgb_hwdc  # Set all RGB values
+            colors[..., 3] = occupancy.astype(float)  # Set alpha from occupancy
+            
+            ax1.voxels(occupancy, facecolors=colors, edgecolor='k')
+        else:  # Single channel case
+            occupancy = (voxels[0] > 0.5).cpu().numpy()
+            ax1.voxels(occupancy, edgecolor='k', alpha=0.5)
+    
+        ax1.view_init(elev=20, azim=45)
+        ax1.set_title("Original Voxels")
+        ax1.set_xlim(0, 32)
+        ax1.set_ylim(0, 32)
+        ax1.set_zlim(0, 32)
+    
+        # 2) LEGO brick visualization
+        ax2 = fig.add_subplot(122, projection='3d')
+        
+        def create_brick_vertices(position, size):
+            x, y, z = position
+            w, l, h = size
+            vertices = np.array([
+                [[x, y, z], [x+w, y, z], [x+w, y+l, z], [x, y+l, z]],
+                [[x, y, z+h], [x+w, y, z+h], [x+w, y+l, z+h], [x, y+l, z+h]],
+                [[x, y, z], [x, y, z+h], [x, y+l, z+h], [x, y+l, z]],
+                [[x+w, y, z], [x+w, y, z+h], [x+w, y+l, z+h], [x+w, y+l, z]],
+                [[x, y, z], [x+w, y, z], [x+w, y, z+h], [x, y, z+h]],
+                [[x, y+l, z], [x+w, y+l, z], [x+w, y+l, z+h], [x, y+l, z+h]]
+            ])
+            return vertices
+    
+        for brick in bricks:
+            vertices = create_brick_vertices(brick.position, brick.size)
+            poly3d = Poly3DCollection(vertices, alpha=0.9)
+            rgb_color = brick.color[:3]
+            poly3d.set_facecolor(rgb_color)
+            poly3d.set_edgecolor('black')
+            ax2.add_collection3d(poly3d)
+    
+        ax2.set_xlim(0, 32)
+        ax2.set_ylim(0, 32)
+        ax2.set_zlim(0, 32)
+        ax2.view_init(elev=20, azim=45)
+        ax2.set_title("LEGO Bricks")
+    
+        # Add connecting arrow with "LegoLization" label
+        plt.annotate(
+            '',  # Empty string for just the arrow
+            xy=(0.48, 0.5),  # Arrow end (right side)
+            xytext=(0.38, 0.5),  # Arrow start (left side)
+            xycoords='figure fraction',
+            arrowprops=dict(arrowstyle='->', color='black', lw=2)
+        )
+        
+        # Add "LegoLization" text above arrow
+        plt.figtext(
+            0.50,  # x position - shifted right (previously 0.43)
+            0.58,  # y position - raised above arrow
+            'LegoLization',
+            ha='center',  # Horizontal center alignment
+            va='bottom',  # Vertical bottom alignment
+            fontsize=12,
+            fontweight='bold'
+        )
+    
+        # Add brick statistics
+        brick_stats = self.get_brick_statistics(bricks)
+        stats_text = "Brick Usage:\n"
+        for brick_name, count in brick_stats.items():
+            stats_text += f"{brick_name}: {count}\n"
+        plt.figtext(
+            0.98, 0.02,  # Bottom right
+            stats_text,
+            ha='right',
+            va='bottom',
+            fontsize=10,
+            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none')
+        )
+    
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
 if __name__ == "__main__":
-    # Load voxel data (works with both RGBA and occupancy formats)
-    voxel_data = torch.load('/Users/PeterAM/Desktop/Research_Project/3D-BlockGen/objaverse_data_voxelized/hf-objaverse-v1/glbs/000-000/e406fd52136949a688d2ed5879361021.pt', weights_only=True)
+    # Load voxel data
+    voxel_data = torch.load('path_to_your_voxel.pt')
     
     # Create converter instance
     converter = LegoConverter()
     
     # Convert to LEGO bricks
     lego_bricks = converter.convert_to_lego(voxel_data)
+    
+    # Create the visualization
+    converter.visualize_legolization(voxel_data, lego_bricks, save_path="legolization_process.png")
     
     # Get and print brick statistics
     brick_stats = converter.get_brick_statistics(lego_bricks)

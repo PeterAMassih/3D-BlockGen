@@ -22,6 +22,7 @@ from iopath.common.file_io import PathManager
 from typing import Optional
 from diffusers import DDPMScheduler, DDIMScheduler
 from blockgen.models.diffusion import DiffusionModel3D
+import os
 
 def save_ply_with_colors(
     f,
@@ -221,10 +222,98 @@ class DiffusionInference3D:
             plt.close()
         else:
             plt.show()
+    
+    def visualize_two_stage_diffusion(
+        self,
+        shape_intermediates: list[torch.Tensor],
+        shape_timesteps: list[int],
+        color_intermediates: list[torch.Tensor],
+        color_timesteps: list[int],
+        save_path: Optional[str] = None
+    ):
+        """Create a visualization showing both shape and color diffusion processes."""
+        num_steps = len(shape_timesteps)
+        fig = plt.figure(figsize=(4*num_steps, 8))
+        
+        # Create subplots with proper spacing
+        gs = plt.GridSpec(2, num_steps)
+        gs.update(wspace=0.3, hspace=0.4)  # Add space between plots
+    
+        # Plot shape process
+        for idx, (sample, t) in enumerate(zip(shape_intermediates, shape_timesteps)):
+            ax = fig.add_subplot(gs[0, idx], projection='3d')
+            occupancy = (sample[0, 0] > 0.5).cpu().numpy()
+            
+            # Use light blue color for shape visualization
+            colors = np.zeros((*occupancy.shape, 4))
+            colors[occupancy, :] = [0.5, 0.7, 1.0, 1.0]  # Light blue with alpha
+            
+            ax.voxels(occupancy, facecolors=colors, edgecolor='k', alpha=0.8)
+            ax.view_init(elev=30, azim=45)
+            ax.set_title(f'Shape t={t}')
+            
+            # Set proper aspect ratio and limits
+            shape = occupancy.shape
+            ax.set_box_aspect([1, 1, 1])
+            ax.set_xlim(0, shape[0])
+            ax.set_ylim(0, shape[1])
+            ax.set_zlim(0, shape[2])
+            
+            # Remove axis labels for cleaner look
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            ax.set_zticklabels([])
+    
+        # Plot color process
+        for idx, (sample, t) in enumerate(zip(color_intermediates, color_timesteps)):
+            ax = fig.add_subplot(gs[1, idx], projection='3d')
+            occupancy = (sample[0, 3] > 0.5).cpu().numpy()
+            
+            # Important: Clip RGB values to [0, 1] range
+            rgb = np.clip(sample[0, :3].cpu().numpy(), 0, 1)
+            
+            # Create colors for occupied voxels
+            colors = np.zeros((*occupancy.shape, 4))
+            rgb_hwdc = np.moveaxis(rgb, 0, -1)  # [H, W, D, 3]
+            colors[occupancy, :3] = rgb_hwdc[occupancy]
+            colors[occupancy, 3] = 1.0
+            
+            ax.voxels(occupancy, facecolors=colors, edgecolor='k', alpha=0.8)
+            ax.view_init(elev=30, azim=45)
+            ax.set_title(f'Color t={t}')
+            
+            # Set proper aspect ratio and limits
+            shape = occupancy.shape
+            ax.set_box_aspect([1, 1, 1])
+            ax.set_xlim(0, shape[0])
+            ax.set_ylim(0, shape[1])
+            ax.set_zlim(0, shape[2])
+            
+            # Remove axis labels for cleaner look
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            ax.set_zticklabels([])
+        
+        # Add stage labels
+        plt.figtext(0.02, 0.75, 'Shape\nDiffusion', ha='left', va='center', fontsize=12)
+        plt.figtext(0.02, 0.25, 'Color\nDiffusion', ha='left', va='center', fontsize=12)
+        
+        if save_path:
+            # Create directory if it doesn't exist
+            save_dir = os.path.dirname(save_path)
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+            
+            # Save with high quality
+            plt.savefig(save_path, bbox_inches='tight', dpi=300, format='png')
+            plt.close()
+        else:
+            plt.show()
 
 
 
-    def sample(self, prompt, num_samples=8, image_size=(32, 32, 32), show_intermediate=False, guidance_scale=7.0, use_mean_init=False, py3d=True, use_rotations=True):
+    def sample(self, prompt, num_samples=8, image_size=(32, 32, 32), show_intermediate=False, guidance_scale=7.0, use_mean_init=False, py3d=True, use_rotations=True, save_diffusion_process: bool = False, diffusion_steps_to_save: list[int] = None):
+        
         with torch.no_grad():
             do_class_guidance = guidance_scale > 1.0
             
@@ -238,9 +327,6 @@ class DiffusionInference3D:
                 encoder_hidden_states_uncond = self.encode_prompt([""] * num_samples)
     
             timesteps = self.noise_scheduler.timesteps.to(self.device)
-            # print(timesteps)
-    
-            # timesteps = timesteps[300:]
             
             # Initialize starting point
             if use_mean_init:
@@ -252,9 +338,11 @@ class DiffusionInference3D:
                 )
             else:
                 sample = noise
+    
+            intermediates = []
+            saved_timesteps = []
             
             for t in tqdm(timesteps, desc="Sampling Steps", total=len(timesteps)):
-
                 # Get conditioned prediction
                 if use_rotations:
                     residual = self._get_prediction_with_rotations(sample, t, encoder_hidden_states, self.model)
@@ -279,9 +367,6 @@ class DiffusionInference3D:
                 alpha_prod_t = self.noise_scheduler.alphas_cumprod[t]
                 beta_prod_t = 1 - alpha_prod_t
                 pred_original_sample = (sample - beta_prod_t**0.5 * residual) / (alpha_prod_t ** 0.5)
-                # print(t.item(), (alpha_prod_t**0.5).item(), (beta_prod_t**0.5).item())
-    
-                # pred_original_sample = pred_original_sample.clamp(0, 1)
     
                 if show_intermediate and t % 50 == 49:
                     print(f"timestep: {t}")
@@ -293,13 +378,24 @@ class DiffusionInference3D:
     
                 # Get next sample
                 sample = self.noise_scheduler.step(residual, t, sample).prev_sample
+    
+                # Save intermediates if requested
+                if save_diffusion_process:
+                    if diffusion_steps_to_save is None or t.item() in diffusion_steps_to_save:
+                        intermediates.append(sample.detach().clone())
+                        saved_timesteps.append(t.item())
+    
+            # Return based on whether we're saving the diffusion process
+            if save_diffusion_process:
+                return sample, intermediates, saved_timesteps
                 
             return sample
 
     def sample_two_stage(self, prompt, num_samples=8, image_size=(32, 32, 32), 
                     show_intermediate=False, guidance_scale=7.0, show_after_shape=False,
                     color_guidance_scale=7.0, use_rotations=True, use_mean_init=False,
-                    save_pipeline_viz: Optional[str] = None):
+                    save_pipeline_viz: Optional[str] = None, save_diffusion_process: bool = False,
+                    diffusion_steps_to_save: list[int] = None):
         """
         Two-stage generation process: first shape, then color.
         
@@ -324,15 +420,30 @@ class DiffusionInference3D:
         with torch.no_grad():
             # Stage 1: Shape Generation
             print("Stage 1: Generating shapes...")
-            shape_samples = self.sample(
-                prompt=prompt,
-                num_samples=num_samples,
-                image_size=image_size,
-                show_intermediate=show_intermediate,
-                guidance_scale=guidance_scale,
-                use_rotations=use_rotations,
-                use_mean_init=use_mean_init
-            )  # Output: [B, 1, H, W, D]
+            
+            if save_diffusion_process:
+                shape_samples, shape_intermediates, shape_timesteps = self.sample(
+                    prompt=prompt,
+                    num_samples=num_samples,
+                    image_size=image_size,
+                    show_intermediate=show_intermediate,
+                    guidance_scale=guidance_scale,
+                    use_rotations=use_rotations,
+                    use_mean_init=use_mean_init,
+                    save_diffusion_process=True,
+                    diffusion_steps_to_save=diffusion_steps_to_save
+                ) # Output: [B, 1, H, W, D]
+            else:
+                shape_samples = self.sample(
+                    prompt=prompt,
+                    num_samples=num_samples,
+                    image_size=image_size,
+                    show_intermediate=show_intermediate,
+                    guidance_scale=guidance_scale,
+                    use_rotations=use_rotations,
+                    use_mean_init=use_mean_init
+                )
+                
             
             # Convert to binary occupancy
             shape_occupancy = (shape_samples > 0.5).float()  # [B, 1, H, W, D]
@@ -342,12 +453,16 @@ class DiffusionInference3D:
                 self.visualize_samples(shape_occupancy, threshold=0.5)
                 
             # Stage 2: Color Generation
+            color_intermediates = []
+            color_timesteps = []
             print("\nStage 2: Adding colors...")
             
             # Initialize noise for color stage
             # We want RGB noise only where we have shape, and clean alpha mask
+            # Initialize noise for color stage
             noise = torch.randn(num_samples, 4, *image_size).to(self.device)  # [B, 4, H, W, D]
-            noise[:, :3] = noise[:, :3] * shape_occupancy  # Mask RGB noise by shape
+            # Properly broadcast shape occupancy for RGB channels
+            noise[:, :3] = noise[:, :3] * shape_occupancy.repeat(1, 3, 1, 1, 1)  # [B, 3, H, W, D]
             noise[:, 3:] = shape_occupancy  # Set alpha to binary shape
             
             if use_mean_init:
@@ -417,6 +532,11 @@ class DiffusionInference3D:
                 if show_intermediate and t % 50 == 49:
                     print(f"\nColor timestep: {t}")
                     self.visualize_samples(sample, threshold=0.5)
+
+                if save_diffusion_process:
+                    if diffusion_steps_to_save is None or t in diffusion_steps_to_save:
+                        color_intermediates.append(sample.detach().clone())
+                        color_timesteps.append(t.item())
             
             # Create pipeline visualization if requested
             if save_pipeline_viz:
@@ -425,6 +545,15 @@ class DiffusionInference3D:
                     shape_sample=shape_occupancy,
                     colored_sample=sample,
                     save_path=save_pipeline_viz
+                )
+
+            if save_diffusion_process:
+                self.visualize_two_stage_diffusion(
+                    shape_intermediates=shape_intermediates,
+                    shape_timesteps=shape_timesteps,
+                    color_intermediates=color_intermediates,
+                    color_timesteps=color_timesteps,
+                    save_path='plots/two_stage_diffusion_process.png'
                 )
             
             return sample
@@ -447,7 +576,7 @@ class DiffusionInference3D:
         # Average predictions
         return (pred1 + pred2 + pred3) / 3.0
 
-    def visualize_samples(self, samples, threshold=0.5):
+    def visualize_samples(self, samples, prompt="3D view", threshold=0.5, save_path=None):
         """
         Visualize samples with 2D and 3D views.
         
@@ -551,14 +680,23 @@ class DiffusionInference3D:
             
             # Plot settings
             ax.view_init(elev=30, azim=45)
-            ax.set_title("3D View")
+            ax.set_title(prompt)
             ax.set_box_aspect([1, 1, 1])
             ax.set_xlim(0, shape[0])
             ax.set_ylim(0, shape[1])
             ax.set_zlim(0, shape[2])
         
         plt.tight_layout()
-        plt.show()
+
+        if save_path:
+            save_dir = os.path.dirname(save_path)
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+            
+            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            plt.show()
+        else:
+            plt.show()
     
     def visualize_samples_p3d(self, sample, threshold=0.5):
         device = "cuda"

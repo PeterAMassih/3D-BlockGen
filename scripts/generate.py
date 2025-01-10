@@ -6,7 +6,7 @@ from blockgen.configs.diffusion_config import DiffusionConfig
 from blockgen.models.diffusion import DiffusionModel3D
 from blockgen.inference.inference import DiffusionInference3D
 
-def load_model_for_inference(model_path: str, voxel_config: VoxelConfig, diffusion_config: DiffusionConfig, device='cuda', ema=True):
+def load_model_for_inference(model_path: str, voxel_config: VoxelConfig, diffusion_config: DiffusionConfig, device='cuda', ema=True, inference_steps: int = 50):
     """Load model for inference."""
     
     out_channels = getattr(voxel_config, 'out_channels', voxel_config.in_channels)
@@ -41,6 +41,10 @@ def load_model_for_inference(model_path: str, voxel_config: VoxelConfig, diffusi
     else:
         diffusion_model.load_pretrained(model_path, load_ema=False)
         print("Loaded main model weights")
+
+    if diffusion_config.use_ddim:
+        diffusion_model.noise_scheduler.set_timesteps(inference_steps)
+        print(f"Set DDIM inference steps to {inference_steps}")
     
     return diffusion_model
 
