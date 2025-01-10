@@ -209,6 +209,7 @@ def process_dataset(input_dir: str, output_dir: str, resolution: int = 32):
 
 
 if __name__ == "__main__":
+    # Change this to objaverse_data or objaverse_finetune
     input_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/evaluation_set"
     output_dir = "/scratch/students/2024-fall-sp-pabdel/3D-BlockGen/evaluation_set_voxelized"
 
