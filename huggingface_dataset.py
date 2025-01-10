@@ -18,7 +18,8 @@ class BlockGenDatasetCreator:
                  voxel_dir: Union[str, Path], 
                  annotation_file: Union[str, Path],
                  test_split: float = 0.05,
-                 seed: int = 42):
+                 seed: int = 42,
+                 finetune: bool = False):
         """Initialize BlockGen dataset creator.
         
         Args:
@@ -26,11 +27,13 @@ class BlockGenDatasetCreator:
             annotation_file: Path to annotations JSON file
             test_split: Fraction of data to use for test set (default: 0.05)
             seed: Random seed for reproducible splits (default: 42)
+            finetune: Whether using finetuning format annotations (default: False)
         """
         self.voxel_dir = Path(voxel_dir)
         self.annotation_file = Path(annotation_file)
         self.test_split = test_split
         self.seed = seed
+        self.finetune = finetune
         
         # Set random seeds for reproducibility
         random.seed(seed)
@@ -43,21 +46,35 @@ class BlockGenDatasetCreator:
             self.annotations = json.load(f)
         logger.info("Done loading annotations")
         
-        # Define features
-        self.features = Features({
-            'voxels_occupancy': Array4D(shape=(1, 32, 32, 32), dtype='float32'),  # Alpha channel
-            'voxels_colors': Array4D(shape=(3, 32, 32, 32), dtype='float32'),  # RGB channels
-            'model_id': Value('string'),
-            'name': Value('string'),
-            'categories': Sequence(Value('string')),
-            'tags': Sequence(Value('string')),
-            'metadata': {
-                'is_augmented': Value('bool'),
-                'original_file': Value('string'),
-                'num_occupied': Value('int32'),
-                'split': Value('string')
-            }
-        })
+        # Define features based on mode
+        if finetune:
+            self.features = Features({
+                'voxels_occupancy': Array4D(shape=(1, 32, 32, 32), dtype='float32'),
+                'voxels_colors': Array4D(shape=(3, 32, 32, 32), dtype='float32'),
+                'model_id': Value('string'),
+                'class_label': Value('string'),  # Class label for finetuning
+                'metadata': {
+                    'is_augmented': Value('bool'),
+                    'original_file': Value('string'),
+                    'num_occupied': Value('int32'),
+                    'split': Value('string')
+                }
+            })
+        else:
+            self.features = Features({
+                'voxels_occupancy': Array4D(shape=(1, 32, 32, 32), dtype='float32'),
+                'voxels_colors': Array4D(shape=(3, 32, 32, 32), dtype='float32'),
+                'model_id': Value('string'),
+                'name': Value('string'),
+                'categories': Sequence(Value('string')),
+                'tags': Sequence(Value('string')),
+                'metadata': {
+                    'is_augmented': Value('bool'),
+                    'original_file': Value('string'),
+                    'num_occupied': Value('int32'),
+                    'split': Value('string')
+                }
+            })
 
     def _get_all_files(self) -> List[Path]:
         """Get all .pt files from the voxel directory."""
@@ -77,30 +94,44 @@ class BlockGenDatasetCreator:
                 'model_id': model_id,
             }
             
-            # Process occupancy (Alpha channel) and colors (RGB channels)
+            # Process occupancy and colors
             if voxel_data.shape[0] == 1:
                 data_dict['voxels_occupancy'] = voxel_data.numpy().reshape(1, 32, 32, 32)
                 occupancy = voxel_data[0]
             elif voxel_data.shape[0] == 4:
-                data_dict['voxels_occupancy'] = voxel_data[3].unsqueeze(0).numpy()  # Alpha channel as (1, 32, 32, 32)
-                data_dict['voxels_colors'] = voxel_data[:3].numpy()  # RGB channels as (3, 32, 32, 32)
+                data_dict['voxels_occupancy'] = voxel_data[3].unsqueeze(0).numpy()
+                data_dict['voxels_colors'] = voxel_data[:3].numpy()
                 occupancy = voxel_data[3]
             else:
                 raise ValueError(f"Unexpected channel count: {voxel_data.shape[0]} in {file_path}")
             
-            # Add annotations and metadata
-            annotation = self.annotations.get(model_id, {})
-            data_dict.update({
-                'name': annotation.get('name', ''),
-                'categories': [cat['name'] for cat in annotation.get('categories', [])],
-                'tags': [tag['name'] for tag in annotation.get('tags', [])],
-                'metadata': {
-                    'is_augmented': '_aug' in file_path.stem,
-                    'original_file': str(file_path.relative_to(self.voxel_dir)),
-                    'num_occupied': torch.sum(occupancy > 0).item(),
-                    'split': split
-                }
-            })
+            # Add annotations based on format
+            if self.finetune:
+                # For finetuning format
+                class_label = self.annotations.get(f"{model_id}.glb", "")
+                data_dict.update({
+                    'class_label': class_label,
+                    'metadata': {
+                        'is_augmented': '_aug' in file_path.stem,
+                        'original_file': str(file_path.relative_to(self.voxel_dir)),
+                        'num_occupied': torch.sum(occupancy > 0).item(),
+                        'split': split
+                    }
+                })
+            else:
+                # For standard format
+                annotation = self.annotations.get(model_id, {})
+                data_dict.update({
+                    'name': annotation.get('name', ''),
+                    'categories': [cat['name'] for cat in annotation.get('categories', [])],
+                    'tags': [tag['name'] for tag in annotation.get('tags', [])],
+                    'metadata': {
+                        'is_augmented': '_aug' in file_path.stem,
+                        'original_file': str(file_path.relative_to(self.voxel_dir)),
+                        'num_occupied': torch.sum(occupancy > 0).item(),
+                        'split': split
+                    }
+                })
             return data_dict
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}", exc_info=True)
@@ -121,14 +152,15 @@ class BlockGenDatasetCreator:
         train_files = [files[i] for i in train_indices]
         test_files = [files[i] for i in test_indices]
         
-        # Ensure save_path exists
+        # Create save directory
         save_path = Path(save_path)
         save_path.mkdir(parents=True, exist_ok=True)
         
-        # Initialize counters for incremental saving
-        train_shard_idx, test_shard_idx = 0, 0
+        # Process and save datasets
+        train_shard_idx = 0
+        test_shard_idx = 0
         
-        # Create and save train dataset incrementally
+        # Process training files
         logger.info("Processing and saving training files...")
         train_examples = []
         for i in tqdm(range(0, len(train_files), batch_size)):
@@ -138,14 +170,13 @@ class BlockGenDatasetCreator:
             ]
             train_examples.extend(filter(None, batch_examples))
             
-            # Save shard
             train_dataset = Dataset.from_list(train_examples, features=self.features)
             shard_path = save_path / f"train-{train_shard_idx:05d}.parquet"
             train_dataset.to_parquet(str(shard_path))
-            train_examples = []  # Clear examples to save memory
+            train_examples = []
             train_shard_idx += 1
-    
-        # Create and save test dataset incrementally
+        
+        # Process test files
         logger.info("Processing and saving test files...")
         test_examples = []
         for i in tqdm(range(0, len(test_files), batch_size)):
@@ -155,48 +186,49 @@ class BlockGenDatasetCreator:
             ]
             test_examples.extend(filter(None, batch_examples))
             
-            # Save shard
             test_dataset = Dataset.from_list(test_examples, features=self.features)
             shard_path = save_path / f"test-{test_shard_idx:05d}.parquet"
             test_dataset.to_parquet(str(shard_path))
-            test_examples = []  # Clear examples to save memory
+            test_examples = []
             test_shard_idx += 1
-    
-        # Return paths to the dataset shards for verification
-        logger.info(f"Datasets saved at {save_path}")
-        logger.info(f"Train shards created: {train_shard_idx}")
-        logger.info(f"Test shards created: {test_shard_idx}")
+        
         return {"train": train_shard_idx, "test": test_shard_idx}
 
-
 def push_to_huggingface(dataset_path: str,
-                        annotation_path: str,
-                        repo_id: str,
-                        token: str,
-                        test_split: float = 0.05,
-                        seed: int = 42,
-                        save_path: str = "blockgen_dataset",
-                        private: bool = False):
+                       annotation_path: str,
+                       repo_id: str,
+                       token: str,
+                       test_split: float = 0.05,
+                       seed: int = 42,
+                       save_path: str = "blockgen_dataset",
+                       private: bool = False,
+                       finetune: bool = False):
     """Create and push BlockGen dataset to HuggingFace."""
+    # Clean up any existing parquet files
+    save_path = Path(save_path)
+    if save_path.exists():
+        logger.info("Cleaning up existing parquet files...")
+        for parquet_file in save_path.glob("*.parquet"):
+            parquet_file.unlink()
+    
     # Create the dataset creator object
     creator = BlockGenDatasetCreator(
         voxel_dir=dataset_path,
         annotation_file=annotation_path,
         test_split=test_split,
-        seed=seed
+        seed=seed,
+        finetune=finetune
     )
-
-    #dataset_info = creator.create_dataset(save_path=save_path)
-
-    #logger.info(f"Dataset created with {dataset_info['train']} train shards and {dataset_info['test']} test shards.")
+    
+    dataset_info = creator.create_dataset(save_path=save_path)
+    logger.info(f"Dataset created with {dataset_info['train']} train shards and {dataset_info['test']} test shards.")
     
     save_path = Path(save_path)
-    logger.info("Identifying dataset shards...")
     train_files = sorted(save_path.glob("train-*.parquet"))
     test_files = sorted(save_path.glob("test-*.parquet"))
-
+    
     if not train_files or not test_files:
-        logger.error("No train or test shards found in the specified save path!")
+        logger.error("No train or test shards found!")
         return
     
     logger.info("Loading datasets from shards...")
@@ -209,6 +241,7 @@ def push_to_huggingface(dataset_path: str,
     })
     
     logger.info(f"Private: {private}")
+    logger.info(f"Finetune: {finetune}")
     logger.info(f"Pushing dataset to HuggingFace: {repo_id}")
     dataset.push_to_hub(repo_id, token=token, private=private)
     logger.info("Dataset successfully pushed to HuggingFace!")
@@ -223,6 +256,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_split", type=float, default=0.05, help="Fraction for test split")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--private", action="store_true", help="Create private repository")
+    parser.add_argument("--finetune", action="store_true", help="Use finetuning format annotations")
     
     args = parser.parse_args()
     
@@ -234,5 +268,6 @@ if __name__ == "__main__":
         test_split=args.test_split,
         seed=args.seed,
         save_path="blockgen_dataset",
-        private=args.private
+        private=args.private,
+        finetune=args.finetune
     )
