@@ -29,7 +29,7 @@ runai submit $arg_job_name \
   -e CLUSTER_USER_ID=$CLUSTER_USER_ID \
   -e CLUSTER_GROUP_NAME=$CLUSTER_GROUP_NAME \
   -e CLUSTER_GROUP_ID=$CLUSTER_GROUP_ID \
-  --command -- /bin/bash -c "\". /opt/lab/setup.sh && sleep infinity\""
+  --command -- /bin/bash -c "sh /opt/lab/setup.sh && sleep infinity"
 
 sleep 5 
 
