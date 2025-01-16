@@ -66,7 +66,7 @@ Due to the big size of the data, the finetuning and base dataset are not availab
 #### Pre-processed Datasets
 Available on Hugging Face:
 - [3D-BlockGen Base Dataset](https://huggingface.co/datasets/peteram/3d-blockgen) - 542,292 processed models from Objaverse
-- [3D-BlockGen Finetuning Dataset](https://huggingface.co/datasets/peteram/3d-blockgen-finetune) - 111,464 processed from Objaverse non augmented
+- [3D-BlockGen Finetuning Dataset](https://huggingface.co/datasets/peteram/3d-blockgen-finetune) - 11,464 processed from Objaverse non augmented
 
 Each dataset contains:
 - Voxelized models (32³ resolution)
